@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Decode SDK wrapper DLL
+        shell: pwsh
+        env:
+          DLL_B64: ${{ secrets.MMM_READER_DOTNET_DLL_B64 }}
+        run: |
+          New-Item -ItemType Directory -Force ThalesBridge/libs | Out-Null
+          [IO.File]::WriteAllBytes("ThalesBridge/libs/MMMReaderDotNet50.dll", [Convert]::FromBase64String($env:DLL_B64))
+
+      - run: npm ci
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

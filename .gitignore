@@ -1,0 +1,9 @@
+# Proprietary Thales installer/DLLs — never committed, see README "A note on the Thales SDK itself"
+*.msi
+ThalesBridge/libs/
+
+bin/
+obj/
+publish/
+publish.zip
+node_modules/

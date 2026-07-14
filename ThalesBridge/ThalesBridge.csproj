@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Windows-only: the Thales SDK DLLs and System.Drawing.Bitmap are Windows-native. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The Thales native DLLs are x64. Must match the installed "x64" SDK. -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>ThalesBridge</RootNamespace>
+    <AssemblyName>ThalesBridge</AssemblyName>
+    <Version>0.0.0-dev</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- System.Drawing.Common gives us Bitmap.Save(...) to turn scanned images into base64. -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Reference the managed wrapper shipped INSIDE the SDK MSI.
+      After installing the "Thales Document Reader SDK x64", the DLL lives at:
+        <InstallDir>\SDK\Libraries\MMMReaderDotNet50.dll
+      Point HintPath at that file (copy it next to this project, or use the absolute install path).
+      The native MMMReaderHighLevelAPI.dll etc. must be on the app's DLL search path at RUNTIME
+      (run from, or copy the SDK's Bin folder alongside, the built exe). See README.md.
+    -->
+    <Reference Include="MMMReaderDotNet50">
+      <HintPath>libs\MMMReaderDotNet50.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

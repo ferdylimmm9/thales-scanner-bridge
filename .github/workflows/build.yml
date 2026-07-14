@@ -1,0 +1,40 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  compile:
+    # Real Windows build against the real SDK wrapper — this is what actually
+    # catches SDK API drift, not a stub. Requires the MMM_READER_DOTNET_DLL_B64
+    # repo secret: base64 of MMMReaderDotNet50.dll from your SDK install
+    # (`[Convert]::ToBase64String([IO.File]::ReadAllBytes("MMMReaderDotNet50.dll")) | Set-Clipboard`).
+    # The DLL itself is never committed — only decoded transiently in the
+    # runner. GitHub Actions doesn't expose repo secrets to workflows
+    # triggered by forked-repo pull requests, so this only runs for
+    # same-repo branches/PRs; that's an accepted limitation, not a bug.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Decode SDK wrapper DLL
+        shell: pwsh
+        env:
+          DLL_B64: ${{ secrets.MMM_READER_DOTNET_DLL_B64 }}
+        run: |
+          if (-not $env:DLL_B64) {
+            Write-Error "MMM_READER_DOTNET_DLL_B64 secret is not set — see this job's comment for how to generate it."
+            exit 1
+          }
+          New-Item -ItemType Directory -Force ThalesBridge/libs | Out-Null
+          [IO.File]::WriteAllBytes("ThalesBridge/libs/MMMReaderDotNet50.dll", [Convert]::FromBase64String($env:DLL_B64))
+
+      - name: Build
+        run: dotnet build ThalesBridge -c Release

@@ -1,0 +1,4 @@
+bin/
+obj/
+# Proprietary Thales SDK assembly — copy from <SDK install dir>\SDK\Libraries\ (see README)
+libs/
