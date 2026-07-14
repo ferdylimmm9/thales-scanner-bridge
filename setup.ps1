@@ -137,7 +137,22 @@ if (-not (Test-Path $sdkRoot) -and $SdkMsi) {
   if ($p.ExitCode -ne 0) { Fail "msiexec exited with $($p.ExitCode)" }
 }
 if (-not (Test-Path $sdkRoot)) {
-  Fail "Thales SDK not installed. Re-run with -SdkMsi `"<path to SDK .msi>`" or install it manually first."
+  Fail @"
+Thales SDK not installed, and no -SdkMsi was given (or the path doesn't exist).
+
+This installer never bundles the Thales SDK — it's Thales's licensed software, not ours to
+redistribute (see README.md "A note on the Thales SDK itself"). You need your own copy:
+
+  1. Get the SDK installer (.msi) from Thales directly — via your QS2000/reader purchase,
+     your Thales sales contact, or whoever manages that hardware relationship at your org.
+  2. Re-run this script pointing at it:
+       powershell -ExecutionPolicy Bypass -File setup.ps1 -SdkMsi "C:\path\to\Thales SDK.msi"
+     — or install the SDK manually first, then just run 'setup.ps1' with no -SdkMsi.
+
+If you already installed the SDK and still see this: check it landed at
+"C:\Program Files\Thales\Thales Document Reader SDK x64\<version>\" — a non-default
+install location isn't currently auto-detected.
+"@
 }
 $sdkVersionDir = Get-ChildItem $sdkRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
 $sdkBin = Join-Path $sdkVersionDir.FullName 'Bin'

@@ -11,11 +11,18 @@
   script at the URL below before piping it to a shell you don't fully trust.
   This one only downloads from and talks to github.com and localhost.
 
+  This script never bundles the Thales SDK itself — pass -SdkMsi if you
+  already have the installer locally, otherwise install the SDK yourself
+  first. See README.md "A note on the Thales SDK itself" for why.
+
 .EXAMPLE
   irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
+  # with params, since `iex` can't take them directly:
+  $env:THALES_SDK_MSI = "C:\path\to\Thales SDK.msi"; irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
+  [string]$SdkMsi = $env:THALES_SDK_MSI,
   [int]$Port = 8765,
   [switch]$SkipUvIrPatch
 )
@@ -23,13 +30,23 @@ param(
 $ErrorActionPreference = 'Stop'
 $Repo = 'ferdylimmm9/thales-scanner-bridge'  # <org>/<repo> on GitHub
 
-# ---- self-elevate if not already admin -------------------------------------
+# ---- self-elevate if not already admin, forwarding every param ------------
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
   Write-Host "Relaunching elevated (UAC prompt incoming)..." -ForegroundColor Yellow
-  $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-    "irm https://raw.githubusercontent.com/$Repo/main/install.ps1 | iex")
+  # Params are passed via env vars rather than re-quoting them into a nested
+  # -Command string — avoids quoting bugs for paths with spaces (SdkMsi).
+  $env:THALES_SDK_MSI = $SdkMsi
+  $env:THALES_PORT = $Port
+  $env:THALES_SKIP_UV_IR = if ($SkipUvIrPatch) { '1' } else { '' }
+  $bootstrap = @"
+`$SdkMsi = `$env:THALES_SDK_MSI
+`$Port = [int]`$env:THALES_PORT
+`$SkipUvIrPatch = [bool]`$env:THALES_SKIP_UV_IR
+irm https://raw.githubusercontent.com/$Repo/main/install.ps1 | iex
+"@
+  $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $bootstrap)
   Start-Process powershell -Verb RunAs -ArgumentList $argsList -Wait
   exit $LASTEXITCODE
 }
@@ -52,5 +69,6 @@ Invoke-WebRequest "https://raw.githubusercontent.com/$Repo/$tag/setup.ps1" -OutF
 # ---- hand off to setup.ps1 (does the real work; safe to re-run) -----------
 Write-Host "Running setup.ps1 from $work ..." -ForegroundColor Cyan
 $setupArgs = @('-Port', $Port)
+if ($SdkMsi) { $setupArgs += @('-SdkMsi', $SdkMsi) }
 if ($SkipUvIrPatch) { $setupArgs += '-SkipUvIrPatch' }
 & (Join-Path $work 'setup.ps1') @setupArgs
