@@ -230,17 +230,23 @@ bad handler can no longer kill the scan.
 
 `build.yml` compiles against the **real** SDK wrapper, not a stub, so it actually catches
 SDK API drift. Since `MMMReaderDotNet50.dll` is proprietary and gitignored, CI needs it via
-a repo secret instead: set `MMM_READER_DOTNET_DLL_B64` to the base64 of the DLL from your
-SDK install —
+repo secrets instead. GitHub secrets cap out at 64 KB; the DLL's raw base64 is ~215 KB and
+even gzip'd base64 is ~85 KB, so it's gzip'd, base64'd, then **split across two secrets**,
+`MMM_READER_DOTNET_DLL_B64_1` and `_2`:
 
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\...\SDK\Libraries\MMMReaderDotNet50.dll")) | Set-Clipboard
+```bash
+# from the SDK's Libraries folder, any shell with gzip/base64/split (macOS/Linux/WSL/Git Bash):
+gzip -9 -c MMMReaderDotNet50.dll | base64 > dll.b64
+split -n 2 dll.b64 part_   # -> part_aa, part_ab
 ```
 
-— then paste into Settings → Secrets and variables → Actions. GitHub doesn't expose repo
-secrets to workflows triggered by forked-repo PRs, so this only builds for same-repo
-branches/PRs; external contributors' PRs won't compile in CI (a known, accepted gap, not
-a bug).
+— then set `part_aa`'s contents as `MMM_READER_DOTNET_DLL_B64_1` and `part_ab`'s as
+`MMM_READER_DOTNET_DLL_B64_2` under Settings → Secrets and variables → Actions (or
+`gh secret set MMM_READER_DOTNET_DLL_B64_1 < part_aa`, etc., if you have the `gh` CLI).
+CI concatenates the two, base64-decodes, and gunzips back to the original DLL. GitHub
+doesn't expose repo secrets to workflows triggered by forked-repo PRs, so this only builds
+for same-repo branches/PRs; external contributors' PRs won't compile in CI (a known,
+accepted gap, not a bug).
 
 ## Contributing / versioning
 

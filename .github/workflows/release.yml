@@ -30,10 +30,17 @@ jobs:
       - name: Decode SDK wrapper DLL
         shell: pwsh
         env:
-          DLL_B64: ${{ secrets.MMM_READER_DOTNET_DLL_B64 }}
+          DLL_B64_1: ${{ secrets.MMM_READER_DOTNET_DLL_B64_1 }}
+          DLL_B64_2: ${{ secrets.MMM_READER_DOTNET_DLL_B64_2 }}
         run: |
           New-Item -ItemType Directory -Force ThalesBridge/libs | Out-Null
-          [IO.File]::WriteAllBytes("ThalesBridge/libs/MMMReaderDotNet50.dll", [Convert]::FromBase64String($env:DLL_B64))
+          $gzBytes = [Convert]::FromBase64String($env:DLL_B64_1 + $env:DLL_B64_2)
+          $gzStream = New-Object IO.MemoryStream(, $gzBytes)
+          $outStream = [IO.File]::Create("ThalesBridge/libs/MMMReaderDotNet50.dll")
+          $gunzip = New-Object IO.Compression.GZipStream($gzStream, [IO.Compression.CompressionMode]::Decompress)
+          $gunzip.CopyTo($outStream)
+          $gunzip.Dispose()
+          $outStream.Dispose()
 
       - run: npm ci
       - run: npx semantic-release

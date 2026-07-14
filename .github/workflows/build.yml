@@ -9,11 +9,15 @@ on:
 jobs:
   compile:
     # Real Windows build against the real SDK wrapper — this is what actually
-    # catches SDK API drift, not a stub. Requires the MMM_READER_DOTNET_DLL_B64
-    # repo secret: base64 of MMMReaderDotNet50.dll from your SDK install
-    # (`[Convert]::ToBase64String([IO.File]::ReadAllBytes("MMMReaderDotNet50.dll")) | Set-Clipboard`).
-    # The DLL itself is never committed — only decoded transiently in the
-    # runner. GitHub Actions doesn't expose repo secrets to workflows
+    # catches SDK API drift, not a stub. Requires two repo secrets,
+    # MMM_READER_DOTNET_DLL_B64_1 and _2: MMMReaderDotNet50.dll gzip'd then
+    # base64'd then split in half (GitHub secrets cap out at 64 KB; the raw
+    # base64 of this DLL is ~215 KB, gzip'd base64 is ~85 KB — still too big
+    # for one secret, so it's split across two and concatenated here):
+    #   gzip -9 -c MMMReaderDotNet50.dll | base64 > dll.b64
+    #   split -n 2 dll.b64 part_   # -> part_aa, part_ab
+    # The DLL itself is never committed — only reconstructed transiently in
+    # the runner. GitHub Actions doesn't expose repo secrets to workflows
     # triggered by forked-repo pull requests, so this only runs for
     # same-repo branches/PRs; that's an accepted limitation, not a bug.
     runs-on: windows-latest
@@ -27,14 +31,21 @@ jobs:
       - name: Decode SDK wrapper DLL
         shell: pwsh
         env:
-          DLL_B64: ${{ secrets.MMM_READER_DOTNET_DLL_B64 }}
+          DLL_B64_1: ${{ secrets.MMM_READER_DOTNET_DLL_B64_1 }}
+          DLL_B64_2: ${{ secrets.MMM_READER_DOTNET_DLL_B64_2 }}
         run: |
-          if (-not $env:DLL_B64) {
-            Write-Error "MMM_READER_DOTNET_DLL_B64 secret is not set — see this job's comment for how to generate it."
+          if (-not $env:DLL_B64_1 -or -not $env:DLL_B64_2) {
+            Write-Error "MMM_READER_DOTNET_DLL_B64_1/_2 secrets are not set — see this job's comment for how to generate them."
             exit 1
           }
           New-Item -ItemType Directory -Force ThalesBridge/libs | Out-Null
-          [IO.File]::WriteAllBytes("ThalesBridge/libs/MMMReaderDotNet50.dll", [Convert]::FromBase64String($env:DLL_B64))
+          $gzBytes = [Convert]::FromBase64String($env:DLL_B64_1 + $env:DLL_B64_2)
+          $gzStream = New-Object IO.MemoryStream(, $gzBytes)
+          $outStream = [IO.File]::Create("ThalesBridge/libs/MMMReaderDotNet50.dll")
+          $gunzip = New-Object IO.Compression.GZipStream($gzStream, [IO.Compression.CompressionMode]::Decompress)
+          $gunzip.CopyTo($outStream)
+          $gunzip.Dispose()
+          $outStream.Dispose()
 
       - name: Build
         run: dotnet build ThalesBridge -c Release
