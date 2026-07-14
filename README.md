@@ -9,7 +9,7 @@ been physically verified — see [Supported hardware](#supported-hardware).
 > **Integrating a client app?** You only need [`CONTRACT.md`](CONTRACT.md) — the
 > language-neutral WebSocket data contract (plus a JSON Schema in `contract/`).
 > Building a React app specifically? Use
-> [`thales-scanner-client`](https://github.com/REPLACE_ME/thales-scanner-client)
+> [`thales-scanner-client`](https://github.com/ferdylimmm9/thales-scanner-client)
 > instead of hand-rolling a WebSocket client — it implements this contract already.
 > This README covers building and operating the bridge itself.
 
@@ -29,7 +29,7 @@ been physically verified — see [Supported hardware](#supported-hardware).
 One line in an elevated PowerShell — downloads the latest release and installs it:
 
 ```powershell
-irm https://raw.githubusercontent.com/REPLACE_ME/thales-scanner-bridge/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
 ```
 
 (Review [`install.ps1`](install.ps1) first if you'd rather not pipe a remote script blind —

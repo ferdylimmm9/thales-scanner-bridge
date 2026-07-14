@@ -12,7 +12,7 @@
   This one only downloads from and talks to github.com and localhost.
 
 .EXAMPLE
-  irm https://raw.githubusercontent.com/REPLACE_ME/thales-scanner-bridge/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
@@ -21,7 +21,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Repo = 'REPLACE_ME/thales-scanner-bridge'  # <org>/<repo> on GitHub
+$Repo = 'ferdylimmm9/thales-scanner-bridge'  # <org>/<repo> on GitHub
 
 # ---- self-elevate if not already admin -------------------------------------
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
