@@ -51,44 +51,69 @@ jobs:
         run: dotnet build ThalesBridge -c Release
 
   scripts:
-    # The installers run under Windows PowerShell 5.1 on a kiosk PC — that is
-    # what `powershell -ExecutionPolicy Bypass -File setup.ps1` invokes, and it
-    # is not the same parser as pwsh 7. So lint with 5.1 itself: `shell:
-    # powershell`, never `pwsh`.
+    # These scripts are invoked two incompatible ways, and BOTH must work:
     #
-    # 5.1 assumes CP1252 for BOM-less files. These scripts contain em dashes, and
-    # U+2014 decoded as CP1252 ends in 0x94 — a smart closing quote the parser
-    # honours as a string delimiter, so the whole file fails to parse with
-    # "missing terminator" errors pointing nowhere near the real cause. That
-    # shipped to a release once; this job exists so it cannot happen twice.
+    #   powershell -File setup.ps1        -> reads the FILE. 5.1 assumes CP1252
+    #                                        for a BOM-less file, so non-ASCII
+    #                                        needs a BOM or it is mangled.
+    #   irm .../install.ps1 | iex         -> reads a STRING. A BOM decodes to a
+    #                                        leading U+FEFF that iex chokes on,
+    #                                        breaking the opening <# comment.
+    #
+    # Requiring a BOM fixes the first and breaks the second (that shipped: v1.2.1
+    # made `irm | iex` fail with "Missing opening '(' after keyword 'for'").
+    # The only config satisfying both is ASCII-only with NO BOM: then CP1252 and
+    # UTF-8 are byte-identical and there is nothing to mangle or strip.
+    #
+    # So: no non-ASCII in .ps1 files. Put em dashes in the README, not here.
+    # Lint with 5.1 itself (`shell: powershell`, never `pwsh` -- 7 always reads
+    # UTF-8 and cannot see this class of bug at all).
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Keep this run block strictly ASCII. Actions writes it to a temp .ps1
-      # with no BOM, so 5.1 reads it as CP1252 — the very bug below. An em dash
-      # in here fails the job with "missing terminator" before it checks
-      # anything. (Learned the hard way: the first version of this job did.)
-      - name: BOM + parse check under Windows PowerShell 5.1
+      # Keep this run block strictly ASCII too: Actions writes it to a temp .ps1
+      # with no BOM, so a stray em dash here dies the same way. (The first
+      # version of this job did exactly that.)
+      - name: ASCII + no-BOM + parse check under Windows PowerShell 5.1
         shell: powershell
         run: |
           $bad = 0
           foreach ($f in Get-ChildItem -Path $PWD -Filter *.ps1) {
             $bytes = [IO.File]::ReadAllBytes($f.FullName)
-            $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
-            if (-not $hasBom) {
-              Write-Host "FAIL $($f.Name): no UTF-8 BOM, so 5.1 decodes it as CP1252 and mangles non-ASCII"
+
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+              Write-Host "FAIL $($f.Name): has a UTF-8 BOM. 'irm | iex' would see a leading U+FEFF and fail to parse."
               $bad = 1
               continue
             }
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
-            if ($errors) {
-              foreach ($e in $errors) { Write-Host "FAIL $($f.Name):$($e.Extent.StartLineNumber) $($e.Message)" }
+            $nonAscii = $bytes | Where-Object { $_ -gt 0x7F }
+            if ($nonAscii) {
+              Write-Host "FAIL $($f.Name): contains non-ASCII bytes. Without a BOM 5.1 decodes those as CP1252 and the file will not parse. Use ASCII."
               $bad = 1
-            } else {
-              Write-Host "OK   $($f.Name)"
+              continue
             }
+
+            # Path 1: powershell -File (parses the file on disk)
+            $e1 = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$e1) | Out-Null
+            if ($e1) {
+              foreach ($e in $e1) { Write-Host "FAIL $($f.Name):$($e.Extent.StartLineNumber) (-File) $($e.Message)" }
+              $bad = 1
+              continue
+            }
+
+            # Path 2: irm | iex (parses the downloaded body as a string)
+            $text = [IO.File]::ReadAllText($f.FullName)
+            $e2 = $null
+            [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$e2) | Out-Null
+            if ($e2) {
+              foreach ($e in $e2) { Write-Host "FAIL $($f.Name):$($e.Extent.StartLineNumber) (irm|iex) $($e.Message)" }
+              $bad = 1
+              continue
+            }
+
+            Write-Host "OK   $($f.Name) (ascii, no bom, parses as -File and as irm|iex)"
           }
           exit $bad
 
