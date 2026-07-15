@@ -46,7 +46,7 @@ check before anything else.
 
 `setup.ps1` automates the whole per-machine rollout — SDK check (or silent MSI
 install), the QS2000 UV/IR config patch, publish + install to
-`C:\Program Files\ThalesBridge`, URL ACL for non-admin users, a start-at-logon
+`C:\Program Files\ThalesBridge`, URL ACL for non-admin users, a start-at-boot
 Scheduled Task, and a listening-port verification:
 
 ```powershell
@@ -54,9 +54,56 @@ Scheduled Task, and a listening-port verification:
 powershell -ExecutionPolicy Bypass -File setup.ps1
 powershell -ExecutionPolicy Bypass -File setup.ps1 -SdkMsi "D:\Thales SDK x64 3.9.2.49.msi"
 powershell -ExecutionPolicy Bypass -File setup.ps1 -SkipUvIrPatch   # reader has UV/IR hardware (not QS2000)
+powershell -ExecutionPolicy Bypass -File setup.ps1 -LogonStart      # start at logon instead of at boot
 powershell -ExecutionPolicy Bypass -File setup.ps1 -Doctor          # read-only diagnostic, no changes
 powershell -ExecutionPolicy Bypass -File setup.ps1 -Uninstall
 ```
+
+### Uninstalling
+
+[`uninstall.ps1`](uninstall.ps1) removes the bridge. It self-elevates, needs no clone
+and no network, and is what `setup.ps1 -Uninstall` calls internally:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File uninstall.ps1
+powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Port 9000   # if installed on a non-default port
+powershell -ExecutionPolicy Bypass -File uninstall.ps1 -KeepLogs    # keep the SDK log folders
+```
+
+Or without a local copy:
+
+```powershell
+irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/uninstall.ps1 | iex
+```
+
+It removes the Scheduled Task, stops the process, drops the URL ACL, deletes
+`C:\Program Files\ThalesBridge`, and deletes the working/log folders (SDK logs can
+contain document data — pass `-KeepLogs` to keep them for debugging).
+
+**It leaves the Thales SDK installed**, on purpose: it's a separate licensed product that
+other apps may use, and this project never installed it. It also leaves the
+`Application.ini` UV/IR patch in place — `setup.ps1` edits those values without recording
+the originals, so there's nothing safe to restore. Reinstall the SDK if you need its
+factory settings back.
+
+### Auto-start: boot vs logon
+
+By default the bridge starts **at boot, running as `SYSTEM`** — power the PC on and
+`ws://localhost:8765` is serving before anyone logs in, which is what you want on an
+unattended kiosk. The reader does not have to be plugged in at boot: the bridge retries
+reader init every 10s until it appears.
+
+Pass **`-LogonStart`** to instead start it at logon, as the logging-on user. Use this if
+boot-start turns out not to work on your machine — the bridge itself is a plain console
+app with no UI, but the Thales SDK's native DLLs talk to USB, and a driver that refuses
+to enumerate the reader from a non-interactive session 0 would only show up as a bridge
+that runs but never finds the reader. `setup.ps1 -Doctor` reports which trigger is
+configured and whether the process and port are actually up, so check there first.
+
+> **Verify boot-start once, on the real machine:** run `setup.ps1`, then reboot without
+> logging in, and from another PC (or after logging in) confirm the port is live and a
+> scan works. If `-Doctor` shows the task running as SYSTEM but the reader never
+> initialises, re-run with `-LogonStart`.
 
 On a PC without the .NET SDK and without a downloaded release, first
 `dotnet publish ThalesBridge -c Release -r win-x64 --self-contained true -o publish`

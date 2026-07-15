@@ -24,7 +24,8 @@
 param(
   [string]$SdkMsi = $env:THALES_SDK_MSI,
   [int]$Port = 8765,
-  [switch]$SkipUvIrPatch
+  [switch]$SkipUvIrPatch,
+  [switch]$LogonStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,10 +41,12 @@ if (-not $isAdmin) {
   $env:THALES_SDK_MSI = $SdkMsi
   $env:THALES_PORT = $Port
   $env:THALES_SKIP_UV_IR = if ($SkipUvIrPatch) { '1' } else { '' }
+  $env:THALES_LOGON_START = if ($LogonStart) { '1' } else { '' }
   $bootstrap = @"
 `$SdkMsi = `$env:THALES_SDK_MSI
 `$Port = [int]`$env:THALES_PORT
 `$SkipUvIrPatch = [bool]`$env:THALES_SKIP_UV_IR
+`$LogonStart = [bool]`$env:THALES_LOGON_START
 irm https://raw.githubusercontent.com/$Repo/main/install.ps1 | iex
 "@
   $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $bootstrap)
@@ -65,10 +68,14 @@ Invoke-WebRequest $publishAsset.browser_download_url -OutFile $publishZip
 Expand-Archive $publishZip (Join-Path $work 'publish') -Force
 
 Invoke-WebRequest "https://raw.githubusercontent.com/$Repo/$tag/setup.ps1" -OutFile (Join-Path $work 'setup.ps1')
+# Fetched alongside so the PC has a working uninstaller offline, and so
+# `setup.ps1 -Uninstall` finds it adjacent rather than using its inline fallback.
+Invoke-WebRequest "https://raw.githubusercontent.com/$Repo/$tag/uninstall.ps1" -OutFile (Join-Path $work 'uninstall.ps1')
 
 # ---- hand off to setup.ps1 (does the real work; safe to re-run) -----------
 Write-Host "Running setup.ps1 from $work ..." -ForegroundColor Cyan
 $setupArgs = @('-Port', $Port)
 if ($SdkMsi) { $setupArgs += @('-SdkMsi', $SdkMsi) }
 if ($SkipUvIrPatch) { $setupArgs += '-SkipUvIrPatch' }
+if ($LogonStart) { $setupArgs += '-LogonStart' }
 & (Join-Path $work 'setup.ps1') @setupArgs
