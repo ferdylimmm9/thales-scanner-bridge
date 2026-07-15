@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   One-liner bootstrap: downloads the latest release and runs setup.ps1.
 
