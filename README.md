@@ -24,13 +24,53 @@ been physically verified — see [Supported hardware](#supported-hardware).
 > macOS/Linux with `dotnet build -c Release -p:EnableWindowsTargeting=true` (given
 > `MMMReaderDotNet50.dll` in `libs/`); real builds run on `windows-latest` in CI.
 
+## What is mandatory before you install
+
+Read this first — the installer **cannot** work around any of it.
+
+| # | Mandatory | Why |
+|---|---|---|
+| 1 | **Windows** PC, x64 | The SDK's native DLLs and the reader driver are Windows-only. There is no macOS/Linux runtime. |
+| 2 | **Thales Document Reader SDK x64** — the `.msi`, e.g. `Thales Document Reader SDK x64 3.9.2.49.msi` | Installs the USB drivers **and** the native DLLs the bridge calls at run time. **`setup.ps1` stops at step 1/7 without it** — this is a hard gate, not a warning. |
+| 3 | The **reader plugged in** (QS2000 or another FullPage-API model) | Nothing to scan otherwise. The bridge itself starts fine without it and retries every 10s until it appears, so you can install first and plug in after. |
+| 4 | An **elevated (Administrator)** PowerShell | Needed to install the MSI, write to `C:\Program Files`, add the URL ACL, and register the Scheduled Task. |
+
+> ### ⚠️ The SDK `.msi` is not in this repo, and never will be
+>
+> It is Thales's licensed, proprietary software — redistributing it here would
+> breach that licence. **You must obtain your own copy** via your QS2000/reader
+> purchase, your Thales sales contact, or whoever owns that hardware
+> relationship at your org. See
+> [A note on the Thales SDK itself](#a-note-on-the-thales-sdk-itself).
+>
+> The `MMMReaderDotNet50.dll` checked into `ThalesBridge/libs/` is only the
+> *managed wrapper*. It lets the project **compile** without the SDK — it does
+> **not** let it **run**. Compiling and running are different things.
+
+Not mandatory: the **.NET 8 SDK**. You only need it to build from source; the
+released `publish.zip` is self-contained. See
+[Prerequisites](#prerequisites-on-the-scanner-pc) for the full list.
+
 ## Fastest path: kiosk PC, no dev tools, no clone
 
-One line in an elevated PowerShell — downloads the latest release and installs it:
+One line in an elevated PowerShell — downloads the latest release and installs it.
+**Point it at your SDK `.msi`** (step 2 above) unless the SDK is already installed
+on this PC:
 
 ```powershell
+# have the installer install the SDK for you (silently) as part of the run:
+$env:THALES_SDK_MSI = "C:\path\to\Thales Document Reader SDK x64 3.9.2.49.msi"
 irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
 ```
+
+```powershell
+# or, if you already installed the SDK by hand:
+irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
+```
+
+If you run it with no SDK installed and no `THALES_SDK_MSI` set, it stops with
+`FAILED: Thales SDK not installed` and tells you exactly this. That is the gate
+doing its job, not a bug.
 
 (Review [`install.ps1`](install.ps1) first if you'd rather not pipe a remote script blind —
 it only talks to `github.com` and `localhost`, same pattern as rustup/deno's installers.)
