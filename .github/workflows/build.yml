@@ -65,6 +65,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Keep this run block strictly ASCII. Actions writes it to a temp .ps1
+      # with no BOM, so 5.1 reads it as CP1252 — the very bug below. An em dash
+      # in here fails the job with "missing terminator" before it checks
+      # anything. (Learned the hard way: the first version of this job did.)
       - name: BOM + parse check under Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -73,7 +77,7 @@ jobs:
             $bytes = [IO.File]::ReadAllBytes($f.FullName)
             $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
             if (-not $hasBom) {
-              Write-Host "FAIL $($f.Name): no UTF-8 BOM — 5.1 will decode it as CP1252 and mangle non-ASCII"
+              Write-Host "FAIL $($f.Name): no UTF-8 BOM, so 5.1 decodes it as CP1252 and mangles non-ASCII"
               $bad = 1
               continue
             }
@@ -87,3 +91,54 @@ jobs:
             }
           }
           exit $bad
+
+  install-smoke:
+    # Run the documented client-side commands the way a kiosk operator actually
+    # runs them: from cmd.exe, via `powershell -File`, i.e. Windows PowerShell
+    # 5.1. The runner has no Thales SDK and no reader, so a full install cannot
+    # complete -- but everything up to the SDK gate must run cleanly, and that
+    # is where all four 5.1 install defects lived. A parse error or a
+    # NativeCommandError here means the installer is broken on a real kiosk.
+    #
+    # As above: keep these run blocks ASCII-only.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup.ps1 reaches the SDK gate without a PowerShell error
+        shell: cmd
+        run: |
+          powershell -ExecutionPolicy Bypass -File setup.ps1 > out.txt 2>&1
+          echo ---- exit=%ERRORLEVEL% ----
+          type out.txt
+          findstr /C:"ParserError" out.txt >nul && (echo SMOKE FAIL: script did not parse under 5.1 & exit /b 1)
+          findstr /C:"missing the terminator" out.txt >nul && (echo SMOKE FAIL: encoding/BOM regression & exit /b 1)
+          findstr /C:"NativeCommandError" out.txt >nul && (echo SMOKE FAIL: native stderr promoted to terminating & exit /b 1)
+          findstr /C:"Thales SDK not installed" out.txt >nul || (echo SMOKE FAIL: did not reach the SDK gate & exit /b 1)
+          echo SMOKE OK: reached the SDK gate cleanly
+          exit /b 0
+
+      - name: setup.ps1 -Doctor runs without a PowerShell error
+        shell: cmd
+        run: |
+          powershell -ExecutionPolicy Bypass -File setup.ps1 -Doctor > doc.txt 2>&1
+          echo ---- exit=%ERRORLEVEL% ----
+          type doc.txt
+          findstr /C:"ParserError" doc.txt >nul && (echo SMOKE FAIL: parser error & exit /b 1)
+          findstr /C:"NativeCommandError" doc.txt >nul && (echo SMOKE FAIL: NativeCommandError & exit /b 1)
+          findstr /C:"diagnostic report" doc.txt >nul || (echo SMOKE FAIL: doctor did not run & exit /b 1)
+          echo SMOKE OK: doctor ran and reported
+          exit /b 0
+
+      - name: uninstall.ps1 is clean-machine safe (must exit 0 on a bare PC)
+        shell: cmd
+        run: |
+          powershell -ExecutionPolicy Bypass -File uninstall.ps1 > un.txt 2>&1
+          set RC=%ERRORLEVEL%
+          echo ---- exit=%RC% ----
+          type un.txt
+          findstr /C:"ParserError" un.txt >nul && (echo SMOKE FAIL: parser error & exit /b 1)
+          findstr /C:"NativeCommandError" un.txt >nul && (echo SMOKE FAIL: NativeCommandError & exit /b 1)
+          if not "%RC%"=="0" (echo SMOKE FAIL: uninstall errored on an already-clean machine & exit /b 1)
+          echo SMOKE OK: uninstall completed on a clean machine
+          exit /b 0
