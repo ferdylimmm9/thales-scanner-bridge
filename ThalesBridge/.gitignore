@@ -1,4 +1,5 @@
 bin/
 obj/
-# Proprietary Thales SDK assembly — copy from <SDK install dir>\SDK\Libraries\ (see README)
-libs/
+# Native Thales SDK files stay uncommitted; the .NET wrapper DLL is checked in
+libs/*
+!libs/MMMReaderDotNet50.dll
