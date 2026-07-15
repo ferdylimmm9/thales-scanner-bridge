@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Removes the Thales scanner bridge from this PC.
 
@@ -9,12 +9,12 @@
     3. Removes the URL ACL reservation for the port.
     4. Deletes C:\Program Files\ThalesBridge.
     5. Deletes the bridge's working/log folders (SDK logs may contain document
-       data, so they are worth removing) — skip with -KeepLogs.
+       data, so they are worth removing) - skip with -KeepLogs.
 
   Deliberately NOT touched:
-    * The Thales Document Reader SDK — it is a separate product, may be used by
+    * The Thales Document Reader SDK - it is a separate product, may be used by
       other apps, and this script never installed it in the first place.
-    * The SDK's Application.ini UV/IR patch — setup.ps1 edits values in place
+    * The SDK's Application.ini UV/IR patch - setup.ps1 edits values in place
       and does not record the originals, so there is nothing safe to restore.
       Reinstall the SDK if you need factory settings back.
 
@@ -48,11 +48,11 @@ if (-not $isAdmin) {
   $env:THALES_PORT = $Port
   $env:THALES_KEEP_LOGS = if ($KeepLogs) { '1' } else { '' }
   if ($PSCommandPath) {
-    # Running from a file (clone or downloaded copy) — re-run that same file.
+    # Running from a file (clone or downloaded copy) - re-run that same file.
     $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Port', $Port)
     if ($KeepLogs) { $argsList += '-KeepLogs' }
   } else {
-    # Piped in via `irm ... | iex` — there is no file to re-run, so re-fetch.
+    # Piped in via `irm ... | iex` - there is no file to re-run, so re-fetch.
     $bootstrap = @"
 `$Port = [int]`$env:THALES_PORT
 `$KeepLogs = [bool]`$env:THALES_KEEP_LOGS
@@ -64,7 +64,7 @@ irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/uni
   exit $LASTEXITCODE
 }
 
-Write-Host "Thales scanner bridge — uninstall" -ForegroundColor Cyan
+Write-Host "Thales scanner bridge - uninstall" -ForegroundColor Cyan
 
 # ---- 1. Scheduled task -----------------------------------------------------
 Step "1/5 Scheduled task"
@@ -89,7 +89,7 @@ if ($proc) {
 
 # ---- 3. URL ACL ------------------------------------------------------------
 Step "3/5 URL ACL for port $Port"
-# Match the URL itself, not netsh's surrounding prose — that prose is localised
+# Match the URL itself, not netsh's surrounding prose - that prose is localised
 # and a non-English Windows would otherwise look like "nothing reserved".
 # Routed through cmd for the same NativeCommandError reason as step 1.
 $url = "http://localhost:$Port/"

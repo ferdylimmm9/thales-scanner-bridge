@@ -1,9 +1,9 @@
-﻿<#
+<#
 .SYNOPSIS
   One-liner bootstrap: downloads the latest release and runs setup.ps1.
 
 .DESCRIPTION
-  For a kiosk PC with nothing on it yet — no git clone, no .NET SDK required.
+  For a kiosk PC with nothing on it yet - no git clone, no .NET SDK required.
   Fetches the latest GitHub Release's publish.zip + setup.ps1 into a temp
   folder, self-elevates if needed, and runs the full install.
 
@@ -11,7 +11,7 @@
   script at the URL below before piping it to a shell you don't fully trust.
   This one only downloads from and talks to github.com and localhost.
 
-  This script never bundles the Thales SDK itself — pass -SdkMsi if you
+  This script never bundles the Thales SDK itself - pass -SdkMsi if you
   already have the installer locally, otherwise install the SDK yourself
   first. See README.md "A note on the Thales SDK itself" for why.
 
@@ -37,7 +37,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIde
 if (-not $isAdmin) {
   Write-Host "Relaunching elevated (UAC prompt incoming)..." -ForegroundColor Yellow
   # Params are passed via env vars rather than re-quoting them into a nested
-  # -Command string — avoids quoting bugs for paths with spaces (SdkMsi).
+  # -Command string - avoids quoting bugs for paths with spaces (SdkMsi).
   $env:THALES_SDK_MSI = $SdkMsi
   $env:THALES_PORT = $Port
   $env:THALES_SKIP_UV_IR = if ($SkipUvIrPatch) { '1' } else { '' }

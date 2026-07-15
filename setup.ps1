@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   One-shot installer for the Thales scanner bridge on a kiosk / scanner PC.
 
@@ -7,7 +7,7 @@
     1. Verifies the Thales Document Reader SDK is installed (or installs it
        silently when -SdkMsi is given).
     2. Patches the SDK's Application.ini: disables UV/IR capture. This is
-       specific to the QS2000 (visible-light only) — pass -SkipUvIrPatch on
+       specific to the QS2000 (visible-light only) - pass -SkipUvIrPatch on
        any other Thales FullPage-API reader that actually has UV/IR hardware,
        or this step would wrongly turn working capture off.
     3. Builds/publishes the bridge (or uses a prebuilt 'publish' folder next
@@ -23,7 +23,7 @@
     7. Starts the bridge now and verifies the WebSocket port is listening.
 
   Pass -Doctor to skip all of the above and instead run a read-only
-  diagnostic report against whatever is already installed — use this first
+  diagnostic report against whatever is already installed - use this first
   when troubleshooting a kiosk that "isn't working", before re-running the
   full install.
 
@@ -62,7 +62,7 @@ if (-not $isAdmin) { Fail 'run this script from an elevated (Administrator) Powe
 
 # ---- doctor: read-only diagnostic report -----------------------------------
 if ($Doctor) {
-  Write-Host "Thales scanner bridge — diagnostic report`n" -ForegroundColor Cyan
+  Write-Host "Thales scanner bridge - diagnostic report`n" -ForegroundColor Cyan
   $failures = 0
 
   # 1. SDK present?
@@ -76,7 +76,7 @@ if ($Doctor) {
       if ($ini -match '(?m)^UVImage=0' -and $ini -match '(?m)^IRImage=0') {
         Pass "Application.ini: UV/IR capture disabled"
       } else {
-        Warn "Application.ini: UV/IR capture still enabled — re-run setup.ps1 (unless your reader has UV/IR)"
+        Warn "Application.ini: UV/IR capture still enabled - re-run setup.ps1 (unless your reader has UV/IR)"
       }
     } else { Err "Application.ini not found under $($sdkVersionDir.FullName)"; $failures++ }
   } else { Err "Thales SDK not found at $sdkRoot"; $failures++ }
@@ -88,7 +88,7 @@ if ($Doctor) {
     Pass "Bridge installed: $InstallDir (version $ver)"
   } else { Err "Bridge not found at $exePath"; $failures++ }
 
-  # 3. Scheduled task — existence is not enough: check what actually triggers it,
+  # 3. Scheduled task - existence is not enough: check what actually triggers it,
   #    and (for logon triggers) whether it is scoped to one user rather than any.
   # Via cmd: schtasks writes to stderr when the task is absent, and 5.1 turns
   # native stderr into a NativeCommandError that 'Stop' makes fatal.
@@ -99,16 +99,16 @@ if ($Doctor) {
 
     $xml = (cmd /c "schtasks /query /tn $TaskName /xml ONE 2>nul") -join "`n"
     if ([string]::IsNullOrWhiteSpace($xml)) {
-      Warn "Could not read the task definition XML — skipping trigger check"
+      Warn "Could not read the task definition XML - skipping trigger check"
     } elseif ($xml -match '<BootTrigger>') {
-      Pass "Trigger: at boot — bridge starts without anyone logging in"
+      Pass "Trigger: at boot - bridge starts without anyone logging in"
     } elseif ($xml -match '<LogonTrigger>') {
       if ($xml -match '(?s)<LogonTrigger>.*?<UserId>(.*?)</UserId>.*?</LogonTrigger>') {
-        Warn "Trigger: at logon, but ONLY for user '$($Matches[1])' — no other account starts the bridge. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
+        Warn "Trigger: at logon, but ONLY for user '$($Matches[1])' - no other account starts the bridge. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
       } else {
-        Warn "Trigger: at logon (any user) — nothing runs until someone logs in. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
+        Warn "Trigger: at logon (any user) - nothing runs until someone logs in. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
       }
-    } else { Err "Task has no boot or logon trigger — it will not auto-start"; $failures++ }
+    } else { Err "Task has no boot or logon trigger - it will not auto-start"; $failures++ }
 
     if ($xml -match '<UserId>S-1-5-18</UserId>' -or $xml -match 'NT AUTHORITY\\SYSTEM') {
       Pass "Runs as: SYSTEM"
@@ -128,7 +128,7 @@ if ($Doctor) {
   # 6. URL ACL?
   $acl = (cmd /c "netsh http show urlacl url=http://localhost:$Port/ 2>nul") -join "`n"
   if ($acl -match 'BUILTIN\\Users') { Pass "URL ACL grants BUILTIN\Users access to port $Port" }
-  else { Warn "No URL ACL found for port $Port — non-admin users may not be able to (re)start the bridge" }
+  else { Warn "No URL ACL found for port $Port - non-admin users may not be able to (re)start the bridge" }
 
   Write-Host ""
   if ($failures -eq 0) {
@@ -159,7 +159,7 @@ if ($Uninstall) {
   cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
   if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
   Write-Host "Uninstalled. (SDK and Application.ini were left untouched.)" -ForegroundColor Green
-  Write-Host "Note: log folders under %LOCALAPPDATA%\ThalesBridge were kept — uninstall.ps1 removes those too."
+  Write-Host "Note: log folders under %LOCALAPPDATA%\ThalesBridge were kept - uninstall.ps1 removes those too."
   exit 0
 }
 
@@ -176,17 +176,17 @@ if (-not (Test-Path $sdkRoot)) {
   Fail @"
 Thales SDK not installed, and no -SdkMsi was given (or the path doesn't exist).
 
-This installer never bundles the Thales SDK — it's Thales's licensed software, not ours to
+This installer never bundles the Thales SDK - it's Thales's licensed software, not ours to
 redistribute (see README.md "A note on the Thales SDK itself"). You need your own copy:
 
-  1. Get the SDK installer (.msi) from Thales directly — via your QS2000/reader purchase,
+  1. Get the SDK installer (.msi) from Thales directly - via your QS2000/reader purchase,
      your Thales sales contact, or whoever manages that hardware relationship at your org.
   2. Re-run this script pointing at it:
        powershell -ExecutionPolicy Bypass -File setup.ps1 -SdkMsi "C:\path\to\Thales SDK.msi"
-     — or install the SDK manually first, then just run 'setup.ps1' with no -SdkMsi.
+     - or install the SDK manually first, then just run 'setup.ps1' with no -SdkMsi.
 
 If you already installed the SDK and still see this: check it landed at
-"C:\Program Files\Thales\Thales Document Reader SDK x64\<version>\" — a non-default
+"C:\Program Files\Thales\Thales Document Reader SDK x64\<version>\" - a non-default
 install location isn't currently auto-detected.
 "@
 }
@@ -199,7 +199,7 @@ Write-Host "  found SDK $($sdkVersionDir.Name)" -ForegroundColor Green
 # ---- 2. Application.ini: disable UV/IR (QS2000 has neither) ---------------
 if ($SkipUvIrPatch) {
   Step "2/7 Disable UV/IR capture in Application.ini"
-  Write-Host "  skipped (-SkipUvIrPatch) — your reader model presumably has UV/IR hardware." -ForegroundColor Yellow
+  Write-Host "  skipped (-SkipUvIrPatch) - your reader model presumably has UV/IR hardware." -ForegroundColor Yellow
 } else {
   Step "2/7 Disable UV/IR capture in Application.ini (QS2000-specific; pass -SkipUvIrPatch on readers with UV/IR)"
   $ini = Get-Content $appIni -Raw
@@ -238,7 +238,7 @@ Step "4/7 Launcher"
 $launcher = Join-Path $InstallDir 'run-bridge.cmd'
 @"
 @echo off
-rem Auto-generated by setup.ps1 — native Thales DLLs resolve via PATH; the
+rem Auto-generated by setup.ps1 - native Thales DLLs resolve via PATH; the
 rem working directory must be writable (SDK log files).
 set "PATH=$sdkBin;%PATH%"
 if not exist "%LOCALAPPDATA%\ThalesBridge" mkdir "%LOCALAPPDATA%\ThalesBridge"
@@ -286,7 +286,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $taskTri
 if ($LogonStart) {
   Write-Host "  task '$TaskName' runs the bridge at logon (as $($taskPrincipal.UserId))." -ForegroundColor Green
 } else {
-  Write-Host "  task '$TaskName' runs the bridge at boot as SYSTEM — no logon needed." -ForegroundColor Green
+  Write-Host "  task '$TaskName' runs the bridge at boot as SYSTEM - no logon needed." -ForegroundColor Green
 }
 
 # ---- 7. Start now and verify ------------------------------------------------
@@ -300,7 +300,7 @@ foreach ($i in 1..15) {
   }
 }
 if ($listening) {
-  Write-Host "`nSUCCESS — bridge is serving ws://localhost:$Port" -ForegroundColor Green
+  Write-Host "`nSUCCESS - bridge is serving ws://localhost:$Port" -ForegroundColor Green
   Write-Host "Plug in the reader if it isn't yet: the bridge retries every 10s until it appears."
   Write-Host "Run 'setup.ps1 -Doctor' any time to re-check this install without reinstalling."
 } else {
