@@ -16,7 +16,10 @@
     4. Writes a launcher that puts the SDK Bin folder on PATH and uses a
        writable working directory.
     5. Registers the URL ACL so a non-admin kiosk user may bind the port.
-    6. Creates a Scheduled Task that starts the bridge at every logon.
+    6. Creates a Scheduled Task that starts the bridge at boot, as SYSTEM, so
+       the reader serves ws://localhost without anyone logging in. Pass
+       -LogonStart for the old behaviour (start at logon, as the logging-on
+       user) if the SDK turns out not to drive the reader from session 0.
     7. Starts the bridge now and verifies the WebSocket port is listening.
 
   Pass -Doctor to skip all of the above and instead run a read-only
@@ -28,6 +31,7 @@
   powershell -ExecutionPolicy Bypass -File setup.ps1
   powershell -ExecutionPolicy Bypass -File setup.ps1 -SdkMsi "D:\Thales SDK x64 3.9.2.49.msi" -Port 8765
   powershell -ExecutionPolicy Bypass -File setup.ps1 -SkipUvIrPatch
+  powershell -ExecutionPolicy Bypass -File setup.ps1 -LogonStart
   powershell -ExecutionPolicy Bypass -File setup.ps1 -Doctor
   powershell -ExecutionPolicy Bypass -File setup.ps1 -Uninstall
 #>
@@ -36,6 +40,7 @@ param(
   [string]$SdkMsi = '',
   [int]$Port = 8765,
   [switch]$SkipUvIrPatch,
+  [switch]$LogonStart,
   [switch]$Doctor,
   [switch]$Uninstall
 )
@@ -83,11 +88,29 @@ if ($Doctor) {
     Pass "Bridge installed: $InstallDir (version $ver)"
   } else { Err "Bridge not found at $exePath"; $failures++ }
 
-  # 3. Scheduled task?
+  # 3. Scheduled task — existence is not enough: check what actually triggers it,
+  #    and (for logon triggers) whether it is scoped to one user rather than any.
   $task = schtasks /query /tn $TaskName /fo LIST 2>$null
   if ($LASTEXITCODE -eq 0) {
     $status = ($task | Select-String '^Status:\s*(.+)$').Matches.Groups[1].Value
     Pass "Scheduled task '$TaskName' exists (status: $status)"
+
+    $xml = (schtasks /query /tn $TaskName /xml ONE 2>$null) -join "`n"
+    if ([string]::IsNullOrWhiteSpace($xml)) {
+      Warn "Could not read the task definition XML — skipping trigger check"
+    } elseif ($xml -match '<BootTrigger>') {
+      Pass "Trigger: at boot — bridge starts without anyone logging in"
+    } elseif ($xml -match '<LogonTrigger>') {
+      if ($xml -match '(?s)<LogonTrigger>.*?<UserId>(.*?)</UserId>.*?</LogonTrigger>') {
+        Warn "Trigger: at logon, but ONLY for user '$($Matches[1])' — no other account starts the bridge. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
+      } else {
+        Warn "Trigger: at logon (any user) — nothing runs until someone logs in. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
+      }
+    } else { Err "Task has no boot or logon trigger — it will not auto-start"; $failures++ }
+
+    if ($xml -match '<UserId>S-1-5-18</UserId>' -or $xml -match 'NT AUTHORITY\\SYSTEM') {
+      Pass "Runs as: SYSTEM"
+    }
   } else { Err "Scheduled task '$TaskName' not found"; $failures++ }
 
   # 4. Process running?
@@ -116,7 +139,15 @@ if ($Doctor) {
 }
 
 # ---- uninstall -------------------------------------------------------------
+# uninstall.ps1 is the canonical implementation (and works standalone); this
+# switch just forwards to it so the two can't drift apart. The inline fallback
+# covers a setup.ps1 downloaded on its own, without the rest of the repo.
 if ($Uninstall) {
+  $uninstaller = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'uninstall.ps1'
+  if (Test-Path $uninstaller) {
+    & $uninstaller -Port $Port
+    exit $LASTEXITCODE
+  }
   Step "Uninstalling"
   schtasks /end /tn $TaskName 2>$null | Out-Null
   schtasks /delete /tn $TaskName /f 2>$null | Out-Null
@@ -124,6 +155,7 @@ if ($Uninstall) {
   netsh http delete urlacl url="http://localhost:$Port/" 2>$null | Out-Null
   if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
   Write-Host "Uninstalled. (SDK and Application.ini were left untouched.)" -ForegroundColor Green
+  Write-Host "Note: log folders under %LOCALAPPDATA%\ThalesBridge were kept — uninstall.ps1 removes those too."
   exit 0
 }
 
@@ -217,11 +249,19 @@ netsh http delete urlacl url="http://localhost:$Port/" 2>$null | Out-Null
 netsh http add urlacl url="http://localhost:$Port/" user='BUILTIN\Users' | Out-Null
 Write-Host "  granted BUILTIN\Users the right to listen on http://localhost:$Port/" -ForegroundColor Green
 
-# ---- 6. Scheduled task: start at every logon --------------------------------
+# ---- 6. Scheduled task: start at boot (or at logon with -LogonStart) --------
 Step "6/7 Scheduled task"
 schtasks /delete /tn $TaskName /f 2>$null | Out-Null
-schtasks /create /tn $TaskName /tr "`"$launcher`"" /sc onlogon /rl LIMITED /f | Out-Null
-Write-Host "  task '$TaskName' runs the bridge at every logon." -ForegroundColor Green
+if ($LogonStart) {
+  # Runs as whoever logs on. Needs the URL ACL from step 5 to bind the port.
+  schtasks /create /tn $TaskName /tr "`"$launcher`"" /sc onlogon /rl LIMITED /f | Out-Null
+  Write-Host "  task '$TaskName' runs the bridge at every logon (as the logging-on user)." -ForegroundColor Green
+} else {
+  # SYSTEM + boot trigger: serving before/without any logon. SYSTEM is
+  # admin-equivalent so HTTP.SYS lets it bind the port regardless of step 5's ACL.
+  schtasks /create /tn $TaskName /tr "`"$launcher`"" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
+  Write-Host "  task '$TaskName' runs the bridge at boot as SYSTEM — no logon needed." -ForegroundColor Green
+}
 
 # ---- 7. Start now and verify ------------------------------------------------
 Step "7/7 Start and verify"
