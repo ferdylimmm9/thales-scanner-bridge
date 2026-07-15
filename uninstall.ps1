@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Removes the Thales scanner bridge from this PC.
 
@@ -68,10 +68,13 @@ Write-Host "Thales scanner bridge — uninstall" -ForegroundColor Cyan
 
 # ---- 1. Scheduled task -----------------------------------------------------
 Step "1/5 Scheduled task"
-schtasks /query /tn $TaskName 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-  schtasks /end /tn $TaskName 2>$null | Out-Null
-  schtasks /delete /tn $TaskName /f 2>$null | Out-Null
+# Via cmd/cmdlets rather than bare `schtasks ... 2>$null`: schtasks writes to
+# stderr when the task is absent, and Windows PowerShell 5.1 wraps native stderr
+# in a NativeCommandError that ErrorActionPreference='Stop' promotes to
+# terminating -- so uninstalling a half-installed PC would abort right here.
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+  cmd /c "schtasks /end /tn $TaskName >nul 2>&1"
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
   Done "removed task '$TaskName'"
 } else { Skip "no task '$TaskName' registered" }
 
@@ -88,10 +91,11 @@ if ($proc) {
 Step "3/5 URL ACL for port $Port"
 # Match the URL itself, not netsh's surrounding prose — that prose is localised
 # and a non-English Windows would otherwise look like "nothing reserved".
+# Routed through cmd for the same NativeCommandError reason as step 1.
 $url = "http://localhost:$Port/"
-$acl = (netsh http show urlacl url=$url 2>$null) -join "`n"
+$acl = (cmd /c "netsh http show urlacl url=$url 2>nul") -join "`n"
 if ($acl -match [regex]::Escape($url)) {
-  netsh http delete urlacl url=$url 2>$null | Out-Null
+  cmd /c "netsh http delete urlacl url=$url >nul 2>&1"
   Done "removed reservation for $url"
 } else { Skip "no reservation for $url (was it installed on another port?)" }
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   One-shot installer for the Thales scanner bridge on a kiosk / scanner PC.
 
@@ -90,12 +90,14 @@ if ($Doctor) {
 
   # 3. Scheduled task — existence is not enough: check what actually triggers it,
   #    and (for logon triggers) whether it is scoped to one user rather than any.
-  $task = schtasks /query /tn $TaskName /fo LIST 2>$null
+  # Via cmd: schtasks writes to stderr when the task is absent, and 5.1 turns
+  # native stderr into a NativeCommandError that 'Stop' makes fatal.
+  $task = cmd /c "schtasks /query /tn $TaskName /fo LIST 2>nul"
   if ($LASTEXITCODE -eq 0) {
     $status = ($task | Select-String '^Status:\s*(.+)$').Matches.Groups[1].Value
     Pass "Scheduled task '$TaskName' exists (status: $status)"
 
-    $xml = (schtasks /query /tn $TaskName /xml ONE 2>$null) -join "`n"
+    $xml = (cmd /c "schtasks /query /tn $TaskName /xml ONE 2>nul") -join "`n"
     if ([string]::IsNullOrWhiteSpace($xml)) {
       Warn "Could not read the task definition XML — skipping trigger check"
     } elseif ($xml -match '<BootTrigger>') {
@@ -124,7 +126,7 @@ if ($Doctor) {
   } else { Err "Nothing is listening on port $Port"; $failures++ }
 
   # 6. URL ACL?
-  $acl = netsh http show urlacl url="http://localhost:$Port/" 2>$null
+  $acl = (cmd /c "netsh http show urlacl url=http://localhost:$Port/ 2>nul") -join "`n"
   if ($acl -match 'BUILTIN\\Users') { Pass "URL ACL grants BUILTIN\Users access to port $Port" }
   else { Warn "No URL ACL found for port $Port — non-admin users may not be able to (re)start the bridge" }
 
@@ -149,10 +151,12 @@ if ($Uninstall) {
     exit $LASTEXITCODE
   }
   Step "Uninstalling"
-  schtasks /end /tn $TaskName 2>$null | Out-Null
-  schtasks /delete /tn $TaskName /f 2>$null | Out-Null
+  # Via cmd: these write to stderr when the task/reservation is already absent,
+  # and 5.1 turns native stderr into a NativeCommandError that 'Stop' makes fatal.
+  cmd /c "schtasks /end /tn $TaskName >nul 2>&1"
+  cmd /c "schtasks /delete /tn $TaskName /f >nul 2>&1"
   Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
-  netsh http delete urlacl url="http://localhost:$Port/" 2>$null | Out-Null
+  cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
   if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
   Write-Host "Uninstalled. (SDK and Application.ini were left untouched.)" -ForegroundColor Green
   Write-Host "Note: log folders under %LOCALAPPDATA%\ThalesBridge were kept — uninstall.ps1 removes those too."
@@ -245,27 +249,49 @@ Write-Host "  wrote $launcher" -ForegroundColor Green
 
 # ---- 5. URL ACL so non-admin users can bind the port -----------------------
 Step "5/7 URL ACL for port $Port"
-netsh http delete urlacl url="http://localhost:$Port/" 2>$null | Out-Null
+# Via cmd: netsh writes to stderr when there is no existing reservation, and
+# 5.1 turns native stderr into a NativeCommandError that 'Stop' makes fatal.
+cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
 netsh http add urlacl url="http://localhost:$Port/" user='BUILTIN\Users' | Out-Null
 Write-Host "  granted BUILTIN\Users the right to listen on http://localhost:$Port/" -ForegroundColor Green
 
 # ---- 6. Scheduled task: start at boot (or at logon with -LogonStart) --------
 Step "6/7 Scheduled task"
-schtasks /delete /tn $TaskName /f 2>$null | Out-Null
+# Registered via the cmdlets rather than `schtasks /tr`: a quoted path does not
+# survive native-command argument parsing, so the default install dir
+# "C:\Program Files\..." would register as Command=C:\Program and fail at run
+# time with 0x80070002. The battery defaults also have to be overridden -- a
+# scanner PC may be a laptop or tablet, where the defaults refuse to start (and
+# would kill) the bridge on battery -- and the default 3-day execution limit
+# lifted, since the bridge is meant to run indefinitely.
+$taskAction = New-ScheduledTaskAction -Execute $launcher
+$taskSettings = New-ScheduledTaskSettingsSet `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+  -ExecutionTimeLimit ([TimeSpan]::Zero)
 if ($LogonStart) {
-  # Runs as whoever logs on. Needs the URL ACL from step 5 to bind the port.
-  schtasks /create /tn $TaskName /tr "`"$launcher`"" /sc onlogon /rl LIMITED /f | Out-Null
-  Write-Host "  task '$TaskName' runs the bridge at every logon (as the logging-on user)." -ForegroundColor Green
+  # Runs as whoever installed it, when they log on. Needs step 5's URL ACL to bind.
+  $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
+  $taskPrincipal = New-ScheduledTaskPrincipal `
+    -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+    -LogonType Interactive -RunLevel Limited
 } else {
   # SYSTEM + boot trigger: serving before/without any logon. SYSTEM is
   # admin-equivalent so HTTP.SYS lets it bind the port regardless of step 5's ACL.
-  schtasks /create /tn $TaskName /tr "`"$launcher`"" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
+  $taskTrigger = New-ScheduledTaskTrigger -AtStartup
+  $taskPrincipal = New-ScheduledTaskPrincipal `
+    -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+}
+Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $taskTrigger `
+  -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+if ($LogonStart) {
+  Write-Host "  task '$TaskName' runs the bridge at logon (as $($taskPrincipal.UserId))." -ForegroundColor Green
+} else {
   Write-Host "  task '$TaskName' runs the bridge at boot as SYSTEM — no logon needed." -ForegroundColor Green
 }
 
 # ---- 7. Start now and verify ------------------------------------------------
 Step "7/7 Start and verify"
-schtasks /run /tn $TaskName | Out-Null
+Start-ScheduledTask -TaskName $TaskName
 $listening = $false
 foreach ($i in 1..15) {
   Start-Sleep -Seconds 1
