@@ -8,4 +8,8 @@ bin/
 obj/
 publish/
 publish.zip
+ThalesBridgeSetup.exe
+installer-out/
+Installer/payload.zip
+.installer-payload/
 node_modules/

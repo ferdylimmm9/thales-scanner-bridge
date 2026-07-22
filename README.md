@@ -22,7 +22,8 @@ been physically verified — see [Supported hardware](#supported-hardware).
 > **This project only runs on the Windows PC where the scanner is plugged in** — the SDK's
 > native DLLs and the reader hardware are Windows-only. It can be *compile-checked* on
 > macOS/Linux with `dotnet build -c Release -p:EnableWindowsTargeting=true` (given
-> `MMMReaderDotNet50.dll` in `libs/`); real builds run on `windows-latest` in CI.
+> `MMMReaderDotNet50.dll` in `libs/`). Bitbucket Pipelines cross-builds the Windows
+> executable; hardware/runtime verification still requires a Windows scanner PC.
 
 ## What is mandatory before you install
 
@@ -31,9 +32,9 @@ Read this first — the installer **cannot** work around any of it.
 | # | Mandatory | Why |
 |---|---|---|
 | 1 | **Windows** PC, x64 | The SDK's native DLLs and the reader driver are Windows-only. There is no macOS/Linux runtime. |
-| 2 | **Thales Document Reader SDK x64** — the `.msi`, e.g. `Thales Document Reader SDK x64 3.9.2.49.msi` | Installs the USB drivers **and** the native DLLs the bridge calls at run time. **`setup.ps1` stops at step 1/7 without it** — this is a hard gate, not a warning. |
+| 2 | **Thales Document Reader SDK x64** — the `.msi`, e.g. `Thales Document Reader SDK x64 3.9.2.49.msi` | Installs the USB drivers **and** the native DLLs the bridge calls at run time. **The installer stops without it** — this is a hard gate, not a warning. |
 | 3 | The **reader plugged in** (QS2000 or another FullPage-API model) | Nothing to scan otherwise. The bridge itself starts fine without it and retries every 10s until it appears, so you can install first and plug in after. |
-| 4 | An **elevated (Administrator)** PowerShell | Needed to install the MSI, write to `C:\Program Files`, add the URL ACL, and register the Scheduled Task. |
+| 4 | Permission to approve a Windows **Administrator** prompt | Needed to install the MSI, write to `C:\Program Files`, add the URL ACL, and register the Scheduled Task. |
 
 > ### ⚠️ The SDK `.msi` is not in this repo, and never will be
 >
@@ -48,24 +49,35 @@ Read this first — the installer **cannot** work around any of it.
 > **not** let it **run**. Compiling and running are different things.
 
 Not mandatory: the **.NET 8 SDK**. You only need it to build from source; the
-released `publish.zip` is self-contained. See
+released installer and `publish.zip` are self-contained. See
 [Prerequisites](#prerequisites-on-the-scanner-pc) for the full list.
 
-## Fastest path: kiosk PC, no dev tools, no clone
+## Fastest path: Windows installer (recommended)
 
-One line in an elevated PowerShell — downloads the latest release and installs it.
+1. Download **[`ThalesBridgeSetup.exe`](https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/downloads/ThalesBridgeSetup.exe)** from Bitbucket Downloads.
+2. Double-click it and approve the Windows Administrator prompt.
+3. If the Thales SDK is not already installed, select your licensed SDK `.msi`.
+4. Click **Install**.
+
+The setup executable includes the bridge binaries, has a simple installer window, and
+does not require the client to open PowerShell or install the .NET SDK. It does not bundle
+the proprietary Thales SDK; the client must still obtain that installer from Thales.
+
+## Command-line install (advanced/legacy)
+
+One line in an elevated PowerShell — downloads the latest Bitbucket build and installs it.
 **Point it at your SDK `.msi`** (step 2 above) unless the SDK is already installed
 on this PC:
 
 ```powershell
 # have the installer install the SDK for you (silently) as part of the run:
 $env:THALES_SDK_MSI = "C:\path\to\Thales Document Reader SDK x64 3.9.2.49.msi"
-irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
+irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/install.ps1 | iex
 ```
 
 ```powershell
 # or, if you already installed the SDK by hand:
-irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/install.ps1 | iex
+irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/install.ps1 | iex
 ```
 
 If you run it with no SDK installed and no `THALES_SDK_MSI` set, it stops with
@@ -73,14 +85,14 @@ If you run it with no SDK installed and no `THALES_SDK_MSI` set, it stops with
 doing its job, not a bug.
 
 (Review [`install.ps1`](install.ps1) first if you'd rather not pipe a remote script blind —
-it only talks to `github.com` and `localhost`, same pattern as rustup/deno's installers.)
+it only talks to `bitbucket.org` and `localhost`, same pattern as rustup/deno's installers.)
 Something wrong later? Re-run `setup.ps1 -Doctor` from the folder it installed to
 (printed at the end) — read-only diagnostic report, no reinstall, the first thing to
 check before anything else.
 
-**Prefer to download manually instead:**
+**Prefer to install the portable files manually instead:**
 
-1. Download `publish.zip` from the [latest release](../../releases/latest) and extract
+1. Download [`publish.zip`](https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/downloads/publish.zip) from Bitbucket Downloads and extract
    it next to `setup.ps1` as a folder named `publish`.
 2. Elevated PowerShell: `powershell -ExecutionPolicy Bypass -File setup.ps1`
 
@@ -113,7 +125,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1 -KeepLogs    # keep the S
 Or without a local copy:
 
 ```powershell
-irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/uninstall.ps1 | iex
+irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/uninstall.ps1 | iex
 ```
 
 It removes the Scheduled Task, stops the process, drops the URL ACL, deletes
@@ -315,33 +327,26 @@ bad handler can no longer kill the scan.
 
 ## CI setup (maintainers)
 
-`build.yml` compiles against the **real** SDK wrapper, not a stub, so it actually catches
-SDK API drift. Since `MMMReaderDotNet50.dll` is proprietary and gitignored, CI needs it via
-repo secrets instead. GitHub secrets cap out at 64 KB; the DLL's raw base64 is ~215 KB and
-even gzip'd base64 is ~85 KB, so it's gzip'd, base64'd, then **split across two secrets**,
-`MMM_READER_DOTNET_DLL_B64_1` and `_2`:
+[`bitbucket-pipelines.yml`](bitbucket-pipelines.yml) cross-builds the self-contained
+Windows bridge and installer for branches, pull requests, and `main`. The managed
+`MMMReaderDotNet50.dll` wrapper is checked in, so normal builds need no CI secret.
 
-```bash
-# from the SDK's Libraries folder, any shell with gzip/base64/split (macOS/Linux/WSL/Git Bash):
-gzip -9 -c MMMReaderDotNet50.dll | base64 > dll.b64
-split -n 2 dll.b64 part_   # -> part_aa, part_ab
-```
+Pushing a semantic-version tag such as `v1.3.0` also uploads
+`ThalesBridgeSetup.exe` and `publish.zip` to Bitbucket Downloads. Configure these
+secured repository variables under **Repository settings → Pipelines → Repository variables**:
 
-— then set `part_aa`'s contents as `MMM_READER_DOTNET_DLL_B64_1` and `part_ab`'s as
-`MMM_READER_DOTNET_DLL_B64_2` under Settings → Secrets and variables → Actions (or
-`gh secret set MMM_READER_DOTNET_DLL_B64_1 < part_aa`, etc., if you have the `gh` CLI).
-CI concatenates the two, base64-decodes, and gunzips back to the original DLL. GitHub
-doesn't expose repo secrets to workflows triggered by forked-repo PRs, so this only builds
-for same-repo branches/PRs; external contributors' PRs won't compile in CI (a known,
-accepted gap, not a bug).
+- `ATLASSIAN_ACCOUNT_EMAIL`: email for the Atlassian account uploading the files.
+- `ATLASSIAN_API_TOKEN`: scoped API token with `write:repository:bitbucket`.
+
+Files with the same name are replaced, so the documentation links always point to
+the most recently tagged build.
 
 ## Contributing / versioning
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
-(`feat:`, `fix:`, `chore:`, etc.) — releases are cut automatically by
-`semantic-release` on every push to `main` (see `.github/workflows/release.yml`),
-including a `publish.zip` attached to each GitHub Release for the no-.NET-SDK
-install path above.
+(`feat:`, `fix:`, `chore:`, etc.). To publish a release, create and push a semantic
+version tag such as `v1.3.0`; Bitbucket Pipelines builds and uploads the self-contained
+`ThalesBridgeSetup.exe` and advanced/manual `publish.zip` assets.
 
 ## ⚠️ Known limitation
 

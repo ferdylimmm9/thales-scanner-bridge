@@ -11,7 +11,7 @@
        any other Thales FullPage-API reader that actually has UV/IR hardware,
        or this step would wrongly turn working capture off.
     3. Builds/publishes the bridge (or uses a prebuilt 'publish' folder next
-       to this script, e.g. downloaded from a GitHub Release) and copies it
+       to this script, e.g. downloaded from Bitbucket Downloads) and copies it
        to C:\Program Files\ThalesBridge.
     4. Writes a launcher that puts the SDK Bin folder on PATH and uses a
        writable working directory.
@@ -226,7 +226,7 @@ if (Test-Path (Join-Path $prebuilt 'ThalesBridge.exe')) {
   if ($LASTEXITCODE -ne 0) { Fail 'dotnet publish failed (is ThalesBridge/libs/MMMReaderDotNet50.dll present?)' }
   $srcDir = $prebuilt
 } else {
-  Fail "no prebuilt 'publish' folder next to this script and no .NET SDK to build one. Download 'publish.zip' from the latest GitHub Release and extract it here as 'publish\', or install the .NET 8 SDK."
+  Fail "no prebuilt 'publish' folder next to this script and no .NET SDK to build one. Download 'publish.zip' from Bitbucket Downloads and extract it here as 'publish\', or install the .NET 8 SDK."
 }
 Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
