@@ -1,11 +1,21 @@
-# Proprietary Thales installer — never committed, see README "A note on the Thales SDK itself"
+# Proprietary Thales installer - never committed, see README "A note on the Thales SDK itself"
 *.msi
 ThalesBridge/libs/*
 # The .NET wrapper DLL is committed so the project builds without the full SDK install
 !ThalesBridge/libs/MMMReaderDotNet50.dll
 
+# Build and release output
 bin/
 obj/
 publish/
 publish.zip
-node_modules/
+ThalesBridgeSetup.exe
+installer-out/
+Installer/payload.zip
+.installer-payload/
+
+# Editor and operating-system files
+.idea/
+.DS_Store
+Thumbs.db
+*.log

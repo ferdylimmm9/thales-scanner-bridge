@@ -24,7 +24,7 @@
   powershell -ExecutionPolicy Bypass -File uninstall.ps1
   powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Port 9000
   powershell -ExecutionPolicy Bypass -File uninstall.ps1 -KeepLogs
-  irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/uninstall.ps1 | iex
+  irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/uninstall.ps1 | iex
 #>
 [CmdletBinding()]
 param(
@@ -56,7 +56,7 @@ if (-not $isAdmin) {
     $bootstrap = @"
 `$Port = [int]`$env:THALES_PORT
 `$KeepLogs = [bool]`$env:THALES_KEEP_LOGS
-irm https://raw.githubusercontent.com/ferdylimmm9/thales-scanner-bridge/main/uninstall.ps1 | iex
+irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/uninstall.ps1 | iex
 "@
     $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $bootstrap)
   }
