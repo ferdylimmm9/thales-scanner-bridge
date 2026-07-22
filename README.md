@@ -344,9 +344,10 @@ the most recently tagged build.
 ## Contributing / versioning
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
-(`feat:`, `fix:`, `chore:`, etc.). To publish a release, create and push a semantic
-version tag such as `v1.3.0`; Bitbucket Pipelines builds and uploads the self-contained
-`ThalesBridgeSetup.exe` and advanced/manual `publish.zip` assets.
+(`feat:`, `fix:`, `chore:`, etc.). GitHub `main` uses semantic-release to calculate
+the next version and publish `ThalesBridgeSetup.exe` plus `publish.zip` automatically.
+For Bitbucket Downloads, create and push the matching semantic-version tag; the
+Bitbucket pipeline builds and uploads the same assets.
 
 ## ⚠️ Known limitation
 
