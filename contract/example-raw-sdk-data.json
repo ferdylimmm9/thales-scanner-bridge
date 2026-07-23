@@ -1,0 +1,72 @@
+{
+  "description": "Example of the RAW data the Thales SDK produces for one QS2000 passport scan, captured from the SDK's level-5 debug log (Reader.EnableLogging / bridge --debug-log flag). All values are FICTIONAL but internally consistent: the MRZ lines parse, and every check digit below is correctly computed per ICAO 9303. Use this to understand what exists upstream of the WebSocket contract (bridge/CONTRACT.md); fields marked NOT forwarded never reach clients today.",
+  "raw_sdk_codeline_data": {
+    "puDocCode": "P",
+    "puDocType": "PASSPORT",
+    "puDocIdText": "PASSPORT",
+    "puDocNumber": "P1234567",
+    "puSurname": "DELACRUZ",
+    "puForename": "JUAN",
+    "puForenames": "JUAN",
+    "puDateOfBirth": "14-05-90",
+    "puExpiryDate": "14-05-30",
+    "puIssuingState": "PHL",
+    "puNationality": "PHL",
+    "puSex": "Male",
+    "puShortSex": "M",
+    "puOptionalData1": "12345678901234",
+    "puOptionalData2": null,
+    "puCodeline1": "P<PHLDELACRUZ<<JUAN<<<<<<<<<<<<<<<<<<<<<<<<<",
+    "puCodeline2": "P12345671PHL9005145M30051431234567890123454",
+    "puDocNumberCheckDigit": 1,
+    "puDateOfBirthCheckDigit": 5,
+    "puExpiryDateCheckDigit": 3,
+    "puCodelineValidationResult": "Valid"
+  },
+  "raw_check_digit_results": [
+    { "name": "DocID", "codeline": 2, "charPos": 9, "expected": 1, "read": 1, "result": "PASS" },
+    { "name": "DOB", "codeline": 2, "charPos": 19, "expected": 5, "read": 5, "result": "PASS" },
+    { "name": "Expiry", "codeline": 2, "charPos": 27, "expected": 3, "read": 3, "result": "PASS" },
+    { "name": "OptionalData", "codeline": 2, "charPos": 42, "expected": 5, "read": 5, "result": "PASS" },
+    { "name": "Overall", "codeline": 2, "charPos": 43, "expected": 4, "read": 4, "result": "PASS" }
+  ],
+  "notes_on_raw_date_format": "The SDK logs dates as DD-MM-YY (e.g. 14-05-90 = 14 May 1990). The bridge windows 2-digit years: DOB past-biased, expiry future-biased — see bridge/README.md.",
+  "raw_images_produced": {
+    "CD_IMAGEVIS": "full visible-light page scan, JPEG, typically 300-500 KB (mapped to images.front)",
+    "CD_IMAGEPHOTO": "cropped face photo, JPEG, typically ~100 KB (mapped to images.portrait)",
+    "CD_IMAGEVISREAR": "not produced — QS2000 is single-sided",
+    "IR_UV_images": "not produced — disabled in Application.ini; QS2000 has no IR/UV illumination"
+  },
+  "chip_rfid": "when no RFID data items arrive, the contract frame carries chip: null",
+  "mapped_contract_frame_for_comparison": {
+    "type": "result",
+    "data": {
+      "mrz": {
+        "firstName": "JUAN",
+        "middleName": null,
+        "lastName": "DELACRUZ",
+        "documentNumber": "P1234567",
+        "documentType": "passport",
+        "dateOfBirth": "1990-05-14",
+        "gender": "M",
+        "nationality": "PHL",
+        "issuingCountry": "PHL",
+        "expiryDate": "2030-05-14"
+      },
+      "images": {
+        "front": "data:image/jpeg;base64,...",
+        "back": null,
+        "portrait": "data:image/jpeg;base64,..."
+      },
+      "chip": null,
+      "capturedAt": "2026-07-14T08:20:13.786Z"
+    }
+  },
+  "fields_in_raw_but_NOT_in_contract": {
+    "puOptionalData1": "MRZ line-2 optional data — can carry a national identifier on some passports (e.g. Indonesia). Not forwarded by the bridge today.",
+    "puCodeline1_puCodeline2": "the raw MRZ lines themselves — useful for audit/re-parsing. Not forwarded.",
+    "puCodelineValidationResult": "the SDK's overall MRZ check-digit verdict — a trust signal clients never see. Not forwarded.",
+    "raw_check_digit_results": "per-field check digit pass/fail — not forwarded.",
+    "puDocCode": "raw ICAO document code (P, ID, ...) — only the normalized documentType is forwarded."
+  }
+}

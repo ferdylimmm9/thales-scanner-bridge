@@ -1,0 +1,28 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "./build-release.sh ${nextRelease.version}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "ThalesBridgeSetup.exe",
+            "label": "Windows installer (recommended)"
+          },
+          {
+            "path": "publish.zip",
+            "label": "Portable binaries (advanced/manual install)"
+          }
+        ]
+      }
+    ]
+  ]
+}

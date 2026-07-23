@@ -1,0 +1,43 @@
+image: mcr.microsoft.com/dotnet/sdk:8.0
+
+definitions:
+  caches:
+    nuget: ~/.nuget/packages
+  steps:
+    - step: &build-installer
+        name: Build Windows installer
+        caches:
+          - nuget
+        script:
+          - apt-get update && apt-get install -y --no-install-recommends zip
+          - if [ -n "${BITBUCKET_TAG:-}" ]; then VERSION="${BITBUCKET_TAG#v}"; else VERSION="0.0.0-ci.${BITBUCKET_BUILD_NUMBER}"; fi
+          - ./build-release.sh "$VERSION"
+          - test -s ThalesBridgeSetup.exe
+          - test -s publish.zip
+        artifacts:
+          - ThalesBridgeSetup.exe
+          - publish.zip
+
+pipelines:
+  default:
+    - step: *build-installer
+
+  pull-requests:
+    '**':
+      - step: *build-installer
+
+  branches:
+    main:
+      - step: *build-installer
+
+  tags:
+    'v*':
+      - step: *build-installer
+      - step:
+          name: Publish to Bitbucket Downloads
+          image: curlimages/curl:8.10.1
+          script:
+            - test -n "$ATLASSIAN_ACCOUNT_EMAIL"
+            - test -n "$ATLASSIAN_API_TOKEN"
+            - UPLOAD_URL="https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads"
+            - curl --fail-with-body --user "$ATLASSIAN_ACCOUNT_EMAIL:$ATLASSIAN_API_TOKEN" --request POST "$UPLOAD_URL" --form files=@ThalesBridgeSetup.exe --form files=@publish.zip
