@@ -46,25 +46,7 @@ pipelines:
 
     qa:
       - step: *build-qa-installer
-      - step:
-          name: Publish QA build to Bitbucket Downloads
-          image: curlimages/curl:8.10.1
-          script:
-            - test -n "$ATLASSIAN_ACCOUNT_EMAIL"
-            - test -n "$ATLASSIAN_API_TOKEN"
-            - mv ThalesBridgeSetup.exe ThalesBridgeSetup-qa.exe
-            - mv publish.zip publish-qa.zip
-            - UPLOAD_URL="https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads"
-            - curl --fail-with-body --user "$ATLASSIAN_ACCOUNT_EMAIL:$ATLASSIAN_API_TOKEN" --request POST "$UPLOAD_URL" --form files=@ThalesBridgeSetup-qa.exe --form files=@publish-qa.zip
 
   tags:
     'v*':
       - step: *build-installer
-      - step:
-          name: Publish to Bitbucket Downloads
-          image: curlimages/curl:8.10.1
-          script:
-            - test -n "$ATLASSIAN_ACCOUNT_EMAIL"
-            - test -n "$ATLASSIAN_API_TOKEN"
-            - UPLOAD_URL="https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/downloads"
-            - curl --fail-with-body --user "$ATLASSIAN_ACCOUNT_EMAIL:$ATLASSIAN_API_TOKEN" --request POST "$UPLOAD_URL" --form files=@ThalesBridgeSetup.exe --form files=@publish.zip
