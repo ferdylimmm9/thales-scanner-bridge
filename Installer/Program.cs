@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Net.WebSockets;
 using System.Reflection;
+using System.Text.Json;
 
 namespace ThalesBridgeInstaller;
 
@@ -28,14 +30,20 @@ internal sealed class InstallerForm : Form
     private readonly Button close = new();
     private readonly RichTextBox log = new();
     private readonly Label status = new();
+    private readonly Label bridgeConnection = new();
+    private readonly Label scannerConnection = new();
+    private readonly Label activity = new();
     private Process? installerProcess;
+    private CancellationTokenSource? monitorCancellation;
+    private Task? monitorTask;
     private bool installSucceeded;
+    private int completedScans;
 
     public InstallerForm()
     {
         Text = "Thales Scanner Bridge Setup";
-        ClientSize = new Size(720, 610);
-        MinimumSize = new Size(650, 560);
+        ClientSize = new Size(720, 690);
+        MinimumSize = new Size(650, 640);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
@@ -95,9 +103,34 @@ internal sealed class InstallerForm : Form
         startAtLogon.AutoSize = true;
         startAtLogon.Location = new Point(175, 244);
 
-        var logLabel = new Label { Text = "Installation log", AutoSize = true, Location = new Point(27, 284) };
-        log.Location = new Point(30, 307);
-        log.Size = new Size(660, 225);
+        var connectionGroup = new GroupBox
+        {
+            Text = "Live connection and activity",
+            Location = new Point(30, 278),
+            Size = new Size(660, 112),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+        };
+        bridgeConnection.Text = "Bridge: checking...";
+        bridgeConnection.AutoSize = true;
+        bridgeConnection.Location = new Point(16, 27);
+        bridgeConnection.ForeColor = Color.DarkOrange;
+
+        scannerConnection.Text = "Scanner: waiting for bridge";
+        scannerConnection.AutoSize = true;
+        scannerConnection.Location = new Point(16, 53);
+        scannerConnection.ForeColor = Color.DimGray;
+
+        activity.Text = "Activity: waiting for installation";
+        activity.AutoEllipsis = true;
+        activity.Location = new Point(16, 79);
+        activity.Size = new Size(625, 20);
+        activity.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        activity.ForeColor = Color.DimGray;
+        connectionGroup.Controls.AddRange([bridgeConnection, scannerConnection, activity]);
+
+        var logLabel = new Label { Text = "Installation log", AutoSize = true, Location = new Point(27, 403) };
+        log.Location = new Point(30, 426);
+        log.Size = new Size(660, 190);
         log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         log.ReadOnly = true;
         log.BackColor = Color.FromArgb(28, 28, 28);
@@ -107,13 +140,13 @@ internal sealed class InstallerForm : Form
 
         install.Text = "Install";
         install.Size = new Size(110, 34);
-        install.Location = new Point(460, 552);
+        install.Location = new Point(460, 632);
         install.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         install.Click += async (_, _) => await RunInstallAsync();
 
         close.Text = "Close";
         close.Size = new Size(110, 34);
-        close.Location = new Point(580, 552);
+        close.Location = new Point(580, 632);
         close.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         close.Click += (_, _) => Close();
 
@@ -121,9 +154,16 @@ internal sealed class InstallerForm : Form
         CancelButton = close;
         Controls.AddRange([
             title, intro, status, sdkLabel, sdkMsi, browse, portLabel, port,
-            disableUvIr, startAtLogon, logLabel, log, install, close
+            disableUvIr, startAtLogon, connectionGroup, logLabel, log, install, close
         ]);
         FormClosing += ConfirmCloseWhileRunning;
+        FormClosed += (_, _) => StopMonitor();
+        Shown += (_, _) => StartMonitor((int)port.Value);
+        port.ValueChanged += (_, _) =>
+        {
+            if (installerProcess is null)
+                StartMonitor((int)port.Value);
+        };
     }
 
     private void BrowseForSdk(object? sender, EventArgs e)
@@ -213,6 +253,7 @@ internal sealed class InstallerForm : Form
             status.ForeColor = Color.DarkGreen;
             install.Text = "Installed";
             AppendLog("Installation completed successfully.");
+            StartMonitor((int)port.Value);
             MessageBox.Show(this, "Thales Scanner Bridge was installed successfully.",
                 "Setup complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -232,6 +273,173 @@ internal sealed class InstallerForm : Form
             SetBusy(false);
         }
     }
+
+    private void StartMonitor(int bridgePort)
+    {
+        StopMonitor();
+        monitorCancellation = new CancellationTokenSource();
+        monitorTask = MonitorBridgeAsync(bridgePort, monitorCancellation.Token);
+    }
+
+    private void StopMonitor()
+    {
+        monitorCancellation?.Cancel();
+        monitorCancellation?.Dispose();
+        monitorCancellation = null;
+        monitorTask = null;
+    }
+
+    private async Task MonitorBridgeAsync(int bridgePort, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            SetConnectionLabel(bridgeConnection, $"Bridge: connecting to localhost:{bridgePort}...", Color.DarkOrange);
+
+            using var socket = new ClientWebSocket();
+            socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+            try
+            {
+                await socket.ConnectAsync(new Uri($"ws://localhost:{bridgePort}/"), cancellationToken);
+                SetConnectionLabel(bridgeConnection, $"Bridge: connected on port {bridgePort}", Color.DarkGreen);
+                SetActivity("Activity: bridge connected; waiting for scanner status", Color.DimGray);
+
+                while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+                {
+                    var message = await ReceiveMessageAsync(socket, cancellationToken);
+                    if (message is null)
+                        break;
+                    ProcessBridgeMessage(message);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch
+            {
+                SetConnectionLabel(bridgeConnection, $"Bridge: not running on port {bridgePort}", Color.DarkRed);
+                SetConnectionLabel(scannerConnection, "Scanner: unavailable until bridge starts", Color.DimGray);
+                SetActivity("Activity: waiting for installation or bridge startup", Color.DimGray);
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private static async Task<string?> ReceiveMessageAsync(
+        ClientWebSocket socket,
+        CancellationToken cancellationToken)
+    {
+        const int maxCapturedBytes = 256 * 1024;
+        var buffer = new byte[8192];
+        using var captured = new MemoryStream();
+        bool truncated = false;
+        WebSocketReceiveResult result;
+
+        do
+        {
+            result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+            if (result.MessageType == WebSocketMessageType.Close)
+                return null;
+            if (captured.Length + result.Count <= maxCapturedBytes)
+                captured.Write(buffer, 0, result.Count);
+            else
+                truncated = true;
+        }
+        while (!result.EndOfMessage);
+
+        if (truncated)
+            return """{"type":"result"}""";
+        return System.Text.Encoding.UTF8.GetString(captured.ToArray());
+    }
+
+    private void ProcessBridgeMessage(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("type", out var typeElement))
+                return;
+
+            switch (typeElement.GetString())
+            {
+                case "status":
+                    var scannerStatus = root.TryGetProperty("status", out var statusElement)
+                        ? statusElement.GetString()
+                        : null;
+                    ShowScannerStatus(scannerStatus);
+                    break;
+
+                case "result":
+                    completedScans++;
+                    SetConnectionLabel(scannerConnection, "Scanner: connected and ready", Color.DarkGreen);
+                    SetActivity(
+                        $"Activity: scan completed at {DateTime.Now:T} ({completedScans} this session)",
+                        Color.DarkGreen);
+                    break;
+
+                case "error":
+                    var code = root.TryGetProperty("code", out var codeElement)
+                        ? codeElement.GetString()
+                        : "SCANNER_ERROR";
+                    var message = root.TryGetProperty("message", out var messageElement)
+                        ? messageElement.GetString()
+                        : "Unknown scanner error";
+                    if (code is "SCANNER_NOT_CONNECTED" or "READER_DISCONNECTED")
+                        SetConnectionLabel(scannerConnection, "Scanner: disconnected", Color.DarkRed);
+                    SetActivity($"Activity: {code} - {message}", Color.DarkRed);
+                    break;
+            }
+        }
+        catch (JsonException)
+        {
+            SetActivity("Activity: received an unreadable bridge message", Color.DarkOrange);
+        }
+    }
+
+    private void ShowScannerStatus(string? scannerStatus)
+    {
+        switch (scannerStatus)
+        {
+            case "waiting_for_document":
+                SetConnectionLabel(scannerConnection, "Scanner: connected and ready", Color.DarkGreen);
+                SetActivity("Activity: waiting for a document", Color.DimGray);
+                break;
+            case "reading":
+                SetConnectionLabel(scannerConnection, "Scanner: reading document", Color.DarkOrange);
+                SetActivity("Activity: document detected; scan in progress", Color.DarkOrange);
+                break;
+            default:
+                SetConnectionLabel(scannerConnection, "Scanner: not detected", Color.DarkRed);
+                SetActivity("Activity: connect the scanner; the bridge retries automatically", Color.DimGray);
+                break;
+        }
+    }
+
+    private void SetConnectionLabel(Label label, string text, Color color)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(() => SetConnectionLabel(label, text, color))); }
+            catch (InvalidOperationException) { /* form is closing */ }
+            return;
+        }
+        label.Text = text;
+        label.ForeColor = color;
+    }
+
+    private void SetActivity(string text, Color color)
+        => SetConnectionLabel(activity, text, color);
 
     private static void ExtractPayload(string destination)
     {
