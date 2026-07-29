@@ -14,9 +14,11 @@ definitions:
           - ./build-release.sh "$VERSION"
           - test -s ThalesBridgeSetup.exe
           - test -s publish.zip
+          - test -s monitor-bridge.bat
         artifacts:
           - ThalesBridgeSetup.exe
           - publish.zip
+          - monitor-bridge.bat
 
     - step: &build-qa-installer
         name: Build QA installer
@@ -28,9 +30,11 @@ definitions:
           - ./build-release.sh "$VERSION"
           - test -s ThalesBridgeSetup.exe
           - test -s publish.zip
+          - test -s monitor-bridge.bat
         artifacts:
           - ThalesBridgeSetup.exe
           - publish.zip
+          - monitor-bridge.bat
 
 pipelines:
   default:

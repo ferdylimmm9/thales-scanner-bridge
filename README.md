@@ -163,6 +163,19 @@ on a dev machine and copy this whole repo (including the `publish` folder) over 
 the script then installs the prebuilt binaries. The manual steps below remain for
 reference/debugging.
 
+### Monitor connection and scanner activity
+
+Run [`monitor-bridge.bat`](monitor-bridge.bat) on the scanner PC after installation.
+It connects to `ws://localhost:8765/` and continuously shows:
+
+- whether the bridge WebSocket is connected;
+- `NOT READY`, `READY`, or `READING DOCUMENT` scanner status;
+- completed-scan count for the current monitoring session; and
+- bridge or SDK errors.
+
+The monitor intentionally does not print names, document numbers, images, or other
+personal data from completed scans. Press `Ctrl+C` to stop it.
+
 ## Supported hardware
 
 **Verified against: Thales Gemalto Document Reader QS2000** — visible-light
