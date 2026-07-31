@@ -25,91 +25,100 @@ been physically verified — see [Supported hardware](#supported-hardware).
 > `MMMReaderDotNet50.dll` in `libs/`). Bitbucket Pipelines cross-builds the Windows
 > executable; hardware/runtime verification still requires a Windows scanner PC.
 
-## What is mandatory before you install
+## Installation
 
-Read this first — the installer **cannot** work around any of it.
+### Before installing
 
-| # | Mandatory | Why |
-|---|---|---|
-| 1 | **Windows** PC, x64 | The SDK's native DLLs and the reader driver are Windows-only. There is no macOS/Linux runtime. |
-| 2 | **Thales Document Reader SDK x64** — the `.msi`, e.g. `Thales Document Reader SDK x64 3.9.2.49.msi` | Installs the USB drivers **and** the native DLLs the bridge calls at run time. **The installer stops without it** — this is a hard gate, not a warning. |
-| 3 | The **reader plugged in** (QS2000 or another FullPage-API model) | Nothing to scan otherwise. The bridge itself starts fine without it and retries every 10s until it appears, so you can install first and plug in after. |
-| 4 | Permission to approve a Windows **Administrator** prompt | Needed to install the MSI, write to `C:\Program Files`, add the URL ACL, and register the Scheduled Task. |
+Prepare these items on the Windows PC connected to the scanner:
 
-> ### ⚠️ The SDK `.msi` is not in this repo, and never will be
->
-> It is Thales's licensed, proprietary software — redistributing it here would
-> breach that licence. **You must obtain your own copy** via your QS2000/reader
-> purchase, your Thales sales contact, or whoever owns that hardware
-> relationship at your org. See
-> [A note on the Thales SDK itself](#a-note-on-the-thales-sdk-itself).
->
-> The `MMMReaderDotNet50.dll` checked into `ThalesBridge/libs/` is only the
-> *managed wrapper*. It lets the project **compile** without the SDK — it does
-> **not** let it **run**. Compiling and running are different things.
+| Required | Description |
+|---|---|
+| **Windows x64 PC** | The Thales driver and native SDK only run on Windows. |
+| **Administrator access** | Setup needs approval to install under `C:\Program Files`, configure localhost access, and create the startup task. |
+| **Thales Document Reader SDK x64** | It may already be installed. Otherwise, have the licensed SDK `.msi` ready, for example `Thales Document Reader SDK x64 3.9.2.49.msi`. |
+| **Thales reader and USB cable** | The bridge can be installed before connecting the reader, but a physical scan cannot be verified until it is connected. |
 
-Not mandatory: the **.NET 8 SDK**. You only need it to build from source; the
-released installer and `publish.zip` are self-contained. See
-[Prerequisites](#prerequisites-on-the-scanner-pc) for the full list.
+The released installer is self-contained, so the client does **not** need the .NET SDK
+and does **not** need to enter installation commands.
 
-## Fastest path: Windows installer (recommended)
+> The licensed Thales SDK is not included in this repository or inside
+> `ThalesBridgeSetup.exe`. Obtain it through the reader purchase, the organization's
+> Thales contact, or the team responsible for the scanner hardware.
 
-1. Download **[`ThalesBridgeSetup.exe`](https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/downloads/ThalesBridgeSetup.exe)** from Bitbucket Downloads.
-2. Double-click it and approve the Windows Administrator prompt.
-3. If the Thales SDK is not already installed, select your licensed SDK `.msi`.
-4. Click **Install**.
+### Get the installation files
 
-The setup executable includes the bridge binaries, has a simple installer window, and
-does not require the client to open PowerShell or install the .NET SDK. It does not bundle
-the proprietary Thales SDK; the client must still obtain that installer from Thales.
+For QA testing, an authorized repository member can open **Bitbucket → Pipelines**,
+select a successful run for the `qa` branch, and download these artifacts:
 
-## Command-line install (advanced/legacy)
+- `ThalesBridgeSetup.exe` — the recommended offline installer;
+- `monitor-bridge.bat` — optional live connection and scan-activity monitor; and
+- `publish.zip` — advanced/manual deployment package.
 
-One line in an elevated PowerShell — downloads the latest Bitbucket build and installs it.
-**Point it at your SDK `.msi`** (step 2 above) unless the SDK is already installed
-on this PC:
+This is a private repository. A user without repository permission cannot download its
+files directly, even if given the Bitbucket URL. An authorized team member must first
+download the artifacts and provide `ThalesBridgeSetup.exe` through an approved internal
+file share or removable drive. Once copied to the scanner PC, the installer does not
+need Bitbucket access.
+
+### Install with `ThalesBridgeSetup.exe` (recommended)
+
+1. Copy `ThalesBridgeSetup.exe` and, when needed, the licensed Thales SDK `.msi` to the
+   scanner PC.
+2. Double-click `ThalesBridgeSetup.exe` and approve the Windows Administrator prompt.
+3. Confirm that the installer says **Thales Document Reader SDK detected**. If it is not
+   detected, click **Browse** and select the SDK `.msi`.
+4. Keep port **8765** unless the client application is configured to use another port.
+5. For a QS2000, keep **Disable UV/IR capture** selected.
+6. Keep boot startup selected for a shared kiosk. Select **Start at user logon** only if
+   the scanner driver cannot operate before a user signs in.
+7. Click **Install** and wait for **Installed successfully**.
+
+The installer copies the bridge to `C:\Program Files\ThalesBridge`, configures it to
+start automatically, starts it immediately, and checks the local WebSocket port.
+
+### Confirm the installation
+
+Keep the setup window open after installation and check **Live connection and activity**:
+
+| Display | Meaning |
+|---|---|
+| `Bridge: connected on port 8765` | The local WebSocket bridge is running. |
+| `Scanner: connected and ready` | The reader is detected and waiting for a document. |
+| `Scanner: reading document` | A document was detected and capture is in progress. |
+| `Activity: scan completed ...` | The bridge received and published a scan result. |
+
+Place a supported document on the reader. A successful test changes from **reading
+document** to **scan completed**, then returns to **connected and ready**.
+
+After closing setup, double-click [`monitor-bridge.bat`](monitor-bridge.bat) to continue
+monitoring `ws://localhost:8765/`. It reports status, completed scans, and errors without
+printing names, document numbers, or document images. Press `Ctrl+C` to stop it.
+
+If the bridge is connected but the scanner is not detected:
+
+1. Confirm the scanner has power and its USB cable is connected.
+2. Close ReaderExpo, the Thales SDK demo, and any second bridge process—the SDK permits
+   only one reader client at a time.
+3. Confirm the reader works in the Thales SDK demo, close the demo, and restart the PC.
+4. Review [Troubleshooting](#known-issue-error_camera_driver_error-at-startup) if it
+   still does not connect.
+
+## Command-line installation (maintainers only)
+
+The executable is the supported end-user installation method. For maintenance or
+diagnostics from a repository checkout:
 
 ```powershell
-# have the installer install the SDK for you (silently) as part of the run:
-$env:THALES_SDK_MSI = "C:\path\to\Thales Document Reader SDK x64 3.9.2.49.msi"
-irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/install.ps1 | iex
-```
-
-```powershell
-# or, if you already installed the SDK by hand:
-irm https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/raw/main/install.ps1 | iex
-```
-
-If you run it with no SDK installed and no `THALES_SDK_MSI` set, it stops with
-`FAILED: Thales SDK not installed` and tells you exactly this. That is the gate
-doing its job, not a bug.
-
-(Review [`install.ps1`](install.ps1) first if you'd rather not pipe a remote script blind —
-it only talks to `bitbucket.org` and `localhost`, same pattern as rustup/deno's installers.)
-Something wrong later? Re-run `setup.ps1 -Doctor` from the folder it installed to
-(printed at the end) — read-only diagnostic report, no reinstall, the first thing to
-check before anything else.
-
-**Prefer to install the portable files manually instead:**
-
-1. Download [`publish.zip`](https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/downloads/publish.zip) from Bitbucket Downloads and extract
-   it next to `setup.ps1` as a folder named `publish`.
-2. Elevated PowerShell: `powershell -ExecutionPolicy Bypass -File setup.ps1`
-
-`setup.ps1` automates the whole per-machine rollout — SDK check (or silent MSI
-install), the QS2000 UV/IR config patch, publish + install to
-`C:\Program Files\ThalesBridge`, URL ACL for non-admin users, a start-at-boot
-Scheduled Task, and a listening-port verification:
-
-```powershell
-# elevated PowerShell, from this repo's root:
+# Run in an elevated PowerShell from the repository root.
 powershell -ExecutionPolicy Bypass -File setup.ps1
 powershell -ExecutionPolicy Bypass -File setup.ps1 -SdkMsi "D:\Thales SDK x64 3.9.2.49.msi"
-powershell -ExecutionPolicy Bypass -File setup.ps1 -SkipUvIrPatch   # reader has UV/IR hardware (not QS2000)
-powershell -ExecutionPolicy Bypass -File setup.ps1 -LogonStart      # start at logon instead of at boot
-powershell -ExecutionPolicy Bypass -File setup.ps1 -Doctor          # read-only diagnostic, no changes
-powershell -ExecutionPolicy Bypass -File setup.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File setup.ps1 -SkipUvIrPatch
+powershell -ExecutionPolicy Bypass -File setup.ps1 -LogonStart
+powershell -ExecutionPolicy Bypass -File setup.ps1 -Doctor
 ```
+
+`setup.ps1 -Doctor` is read-only and should be the first diagnostic step when an
+installed scanner PC is not working.
 
 ### Uninstalling
 
@@ -163,19 +172,6 @@ on a dev machine and copy this whole repo (including the `publish` folder) over 
 the script then installs the prebuilt binaries. The manual steps below remain for
 reference/debugging.
 
-### Monitor connection and scanner activity
-
-Run [`monitor-bridge.bat`](monitor-bridge.bat) on the scanner PC after installation.
-It connects to `ws://localhost:8765/` and continuously shows:
-
-- whether the bridge WebSocket is connected;
-- `NOT READY`, `READY`, or `READING DOCUMENT` scanner status;
-- completed-scan count for the current monitoring session; and
-- bridge or SDK errors.
-
-The monitor intentionally does not print names, document numbers, images, or other
-personal data from completed scans. Press `Ctrl+C` to stop it.
-
 ## Supported hardware
 
 **Verified against: Thales Gemalto Document Reader QS2000** — visible-light
@@ -201,7 +197,7 @@ also why CI decodes the wrapper DLL from a private repo secret rather than commi
 (see [CI setup](#ci-setup-maintainers) below), and why `ThalesBridge/libs/` and any
 `*.msi` are gitignored.
 
-## Prerequisites (on the scanner PC)
+## Developer prerequisites (source build)
 
 1. Install **Thales Document Reader SDK x64** (the `.msi`, obtained from Thales — not
    included in this repo). This installs the drivers and DLLs.
@@ -344,23 +340,22 @@ bad handler can no longer kill the scan.
 Windows bridge and installer for branches, pull requests, and `main`. The managed
 `MMMReaderDotNet50.dll` wrapper is checked in, so normal builds need no CI secret.
 
-Pushing a semantic-version tag such as `v1.3.0` also uploads
-`ThalesBridgeSetup.exe` and `publish.zip` to Bitbucket Downloads. Configure these
-secured repository variables under **Repository settings → Pipelines → Repository variables**:
+Each successful Bitbucket run keeps `ThalesBridgeSetup.exe`, `monitor-bridge.bat`, and
+`publish.zip` as pipeline artifacts. The `qa` branch uses a version such as
+`0.0.0-qa.<build-number>`. These builds do not require an Atlassian email or API token.
 
-- `ATLASSIAN_ACCOUNT_EMAIL`: email for the Atlassian account uploading the files.
-- `ATLASSIAN_API_TOKEN`: scoped API token with `write:repository:bitbucket`.
-
-Files with the same name are replaced, so the documentation links always point to
-the most recently tagged build.
+Pipeline artifacts are not the same as Bitbucket Downloads. They remain associated with
+their pipeline run and still follow the private repository's access rules. Publishing
+files separately under **Repository → Downloads** requires an authorized manual upload
+or separately configured credentials; the current pipeline intentionally does not do it.
 
 ## Contributing / versioning
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
 (`feat:`, `fix:`, `chore:`, etc.). GitHub `main` uses semantic-release to calculate
 the next version and publish `ThalesBridgeSetup.exe` plus `publish.zip` automatically.
-For Bitbucket Downloads, create and push the matching semantic-version tag; the
-Bitbucket pipeline builds and uploads the same assets.
+Bitbucket branches and semantic-version tags build pipeline artifacts, but do not
+automatically create a Bitbucket Downloads release.
 
 ## ⚠️ Known limitation
 

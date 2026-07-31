@@ -1,33 +1,58 @@
-# Install TL;DR — Thales Scanner Bridge
+# Installation Guide — Thales Scanner Bridge
 
-**What the client needs to install this bridge.**
+Use this guide on the **Windows x64 PC connected to the Thales reader**.
 
-On the **Windows x64 PC where the scanner is plugged in**:
+## Files to prepare
 
-1. Download **[`ThalesBridgeSetup.exe`](https://bitbucket.org/solaireresortcasino/thales-scanner-bridge/downloads/ThalesBridgeSetup.exe)** from Bitbucket Downloads.
-2. Double-click it and approve the Administrator prompt.
-3. Select the licensed Thales SDK `.msi` if the SDK is not already installed.
-4. Click **Install**.
+1. `ThalesBridgeSetup.exe`
+2. The licensed **Thales Document Reader SDK x64** `.msi`, unless it is already installed
+3. `monitor-bridge.bat` for optional post-install monitoring
 
-The client does not need to open PowerShell or install the .NET SDK.
+An authorized team member downloads the files from a successful Bitbucket pipeline run
+for the `qa` branch. Because the repository is private, users without repository access
+must receive the files through an approved internal file share or removable drive.
+`ThalesBridgeSetup.exe` works offline after it has been copied to the scanner PC.
 
-## Hard prerequisites
+The Thales SDK is licensed software and is not included in the bridge installer.
 
-The installer **cannot** work around any of these.
+## Install
 
-| # | Need | Why |
-|---|------|-----|
-| 1 | Windows PC, x64 | Native SDK DLLs + reader driver are Windows-only. No macOS/Linux runtime. |
-| 2 | **Thales Document Reader SDK x64 `.msi`** (e.g. `3.9.2.49`) | Installs USB drivers **and** the native DLLs the bridge calls at runtime. Licensed/proprietary — **not bundled**, obtain your own. The installer hard-stops without it. |
-| 3 | The reader plugged in (QS2000 or another FullPage-API model) | Nothing to scan otherwise. The bridge starts anyway and retries every 10s until the reader appears. |
-| 4 | Permission to approve a Windows Administrator prompt | Needed to install the MSI, write to `C:\Program Files`, add the URL ACL, and register the Scheduled Task. |
+1. Connect the Thales reader to power and USB.
+2. Double-click `ThalesBridgeSetup.exe`.
+3. Approve the Windows Administrator prompt.
+4. If the setup window says the Thales SDK is not detected, click **Browse** and select
+   the licensed SDK `.msi`.
+5. Keep WebSocket port **8765**.
+6. For a QS2000, keep **Disable UV/IR capture** selected.
+7. Click **Install** and wait for **Installed successfully**.
 
-## Not required
+The client does not need to open a command line or install the .NET SDK.
 
-- **.NET 8 SDK** — only needed to build from source. The released `.exe` and `publish.zip` are self-contained.
+## Verify
 
-## After install
+In the setup window, confirm:
 
-- The bridge runs **at boot as SYSTEM** (no interactive logon needed).
-- It serves `ws://localhost:8765`, emitting `DocumentScanResult` JSON to any WebSocket client — see [`CONTRACT.md`](CONTRACT.md).
-- To remove it: `setup.ps1 -Uninstall` (or run `uninstall.ps1`).
+1. `Bridge: connected on port 8765`
+2. `Scanner: connected and ready`
+3. Place a document on the reader.
+4. Confirm `Scanner: reading document`.
+5. Confirm `Activity: scan completed`.
+
+After closing setup, double-click `monitor-bridge.bat` to monitor connection and scan
+activity. It does not print document names, numbers, or images.
+
+## If the scanner is not detected
+
+1. Check scanner power and USB.
+2. Close ReaderExpo or any Thales SDK demo application.
+3. Close any second instance of the bridge.
+4. Restart the PC and run `monitor-bridge.bat` again.
+
+The SDK permits only one application to control the reader at a time.
+
+## Installed behavior
+
+- Installation directory: `C:\Program Files\ThalesBridge`
+- Local WebSocket: `ws://localhost:8765`
+- Default startup: at Windows boot as `SYSTEM`
+- The bridge retries automatically when the reader is disconnected
