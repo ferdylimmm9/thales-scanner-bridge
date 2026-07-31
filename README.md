@@ -92,7 +92,8 @@ document** to **scan completed**, then returns to **connected and ready**.
 
 After closing setup, double-click [`monitor-bridge.bat`](monitor-bridge.bat) to continue
 monitoring `ws://localhost:8765/`. It reports status, completed scans, and errors without
-printing names, document numbers, or document images. Press `Ctrl+C` to stop it.
+printing names, document numbers, or document images. Press `Ctrl+C` to stop it. The
+window remains open after a connection or script error so the message can be reviewed.
 
 If the bridge is connected but the scanner is not detected:
 
