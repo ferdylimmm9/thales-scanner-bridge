@@ -86,9 +86,13 @@ ignored by clients (forward compatibility). JSON field names are camelCase.
 | `issuingCountry` | string | ISO alpha-3; falls back to `nationality` when the MRZ issuing state is absent. |
 | `expiryDate` | string | `yyyy-MM-dd` or `""`. 2-digit years windowed future-biased (a doc expiring "31" = 2031). |
 
-**Guarantee:** a `result` is only emitted when at least one of `lastName` /
-`documentNumber` is non-empty. Anything less is reported as a `READ_INCOMPLETE` error
-instead. Every other field may legitimately be empty — never assume presence.
+**Guarantee:** a `result` is only emitted when the read yielded MRZ identity data
+(at least one of `lastName` / `documentNumber` non-empty) **or** a document image
+(`images.front` / `images.back` non-null). MRZ-less documents (e.g. most national
+IDs) therefore produce a `result` whose `mrz` fields are all empty with a populated
+`images.front` — clients must not assume MRZ presence. A read that yields neither
+is reported as a `READ_INCOMPLETE` error instead. Every field may legitimately be
+empty — never assume presence.
 
 #### `images` fields
 
@@ -119,7 +123,7 @@ ISO 8601 UTC timestamp assigned by the bridge when the read completed.
 ### 2.3 `error` — read or reader failure
 
 ```json
-{ "type": "error", "code": "READ_INCOMPLETE", "message": "Document read produced no usable MRZ data." }
+{ "type": "error", "code": "READ_INCOMPLETE", "message": "Document read produced no MRZ data and no document image." }
 ```
 
 | `code` | Origin | Client action |
