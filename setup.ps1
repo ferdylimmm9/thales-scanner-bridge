@@ -228,9 +228,28 @@ if (Test-Path (Join-Path $prebuilt 'ThalesBridge.exe')) {
 } else {
   Fail "no prebuilt 'publish' folder next to this script and no .NET SDK to build one. Download 'publish.zip' from Bitbucket Downloads and extract it here as 'publish\', or install the .NET 8 SDK."
 }
+# Stop the task first (kills the process tree it launched), then any stray
+# process. Via cmd: schtasks writes to stderr when the task is absent/idle.
+cmd /c "schtasks /end /tn $TaskName >nul 2>&1"
 Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
+# Stop-Process returns before the OS releases the exe's DLL locks - wait for the
+# process to disappear, then retry the copy while handles are released.
+foreach ($i in 1..20) {
+  if (-not (Get-Process ThalesBridge -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Milliseconds 250
+}
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-Copy-Item "$srcDir\*" $InstallDir -Recurse -Force
+$copied = $false
+foreach ($i in 1..10) {
+  try {
+    Copy-Item "$srcDir\*" $InstallDir -Recurse -Force -ErrorAction Stop
+    $copied = $true; break
+  } catch {
+    if ($i -eq 1) { Write-Host "  install dir still locked - retrying up to 10s..." -ForegroundColor Yellow }
+    Start-Sleep -Seconds 1
+  }
+}
+if (-not $copied) { Fail "could not overwrite $InstallDir - something still holds files there (old ThalesBridge.exe?). Close it and re-run setup.ps1." }
 Write-Host "  installed to $InstallDir" -ForegroundColor Green
 
 # ---- 4. Launcher (SDK Bin on PATH + writable working dir) ------------------
