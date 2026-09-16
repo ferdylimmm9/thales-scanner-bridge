@@ -20,3 +20,5 @@ Installer/payload.zip
 .DS_Store
 Thumbs.db
 *.log
+
+manager-out/

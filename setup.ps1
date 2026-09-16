@@ -17,7 +17,7 @@
        writable working directory.
     5. Registers the URL ACL so a non-admin kiosk user may bind the port.
     6. Creates a Scheduled Task that starts the bridge at boot, as SYSTEM, so
-       the reader serves ws://localhost without anyone logging in. Pass
+       the reader serves wss://localhost without anyone logging in. Pass
        -LogonStart for the old behaviour (start at logon, as the logging-on
        user) if the SDK turns out not to drive the reader from session 0.
     7. Starts the bridge now and verifies the WebSocket port is listening.
@@ -38,6 +38,7 @@
 [CmdletBinding()]
 param(
   [string]$SdkMsi = '',
+  [ValidateRange(1, 65535)]
   [int]$Port = 8765,
   [switch]$SkipUvIrPatch,
   [switch]$LogonStart,
@@ -54,6 +55,24 @@ function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 function Pass($msg) { Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 function Err($msg) { Write-Host "  [FAIL] $msg" -ForegroundColor Red }
+
+# Real TLS + WebSocket probe: a listening TCP port alone does not prove WSS works.
+function Test-BridgeWebSocket {
+  $socket = New-Object System.Net.WebSockets.ClientWebSocket
+  $timeout = New-Object System.Threading.CancellationTokenSource
+  $timeout.CancelAfter(3000)
+  try {
+    $socket.ConnectAsync([Uri]"wss://localhost:$Port/", $timeout.Token).GetAwaiter().GetResult()
+    return $true
+  } catch {
+    Write-Verbose "WSS probe failed: $($_.Exception.Message)"
+    return $false
+  } finally {
+    $socket.Abort()
+    $socket.Dispose()
+    $timeout.Dispose()
+  }
+}
 
 # ---- admin check -----------------------------------------------------------
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -121,14 +140,50 @@ if ($Doctor) {
   else { Warn "ThalesBridge.exe is not currently running" }
 
   # 5. Port listening?
-  if (Test-NetConnection -ComputerName localhost -Port $Port -InformationLevel Quiet -WarningAction SilentlyContinue) {
-    Pass "Port $Port is listening (ws://localhost:$Port)"
-  } else { Err "Nothing is listening on port $Port"; $failures++ }
+  if (Test-BridgeWebSocket) {
+    Pass "TLS and WebSocket handshake passed (wss://localhost:$Port)"
+  } else { Err "WSS handshake failed on port ${Port}: check certificate trust/expiry, SSL binding and bridge process"; $failures++ }
 
   # 6. URL ACL?
-  $acl = (cmd /c "netsh http show urlacl url=http://localhost:$Port/ 2>nul") -join "`n"
+  $acl = (cmd /c "netsh http show urlacl url=https://localhost:$Port/ 2>nul") -join "`n"
   if ($acl -match 'BUILTIN\\Users') { Pass "URL ACL grants BUILTIN\Users access to port $Port" }
   else { Warn "No URL ACL found for port $Port - non-admin users may not be able to (re)start the bridge" }
+
+  Write-Host "`n--- WebSocket / TLS configuration ---"
+  Write-Host "Endpoint: wss://localhost:$Port/ (frontend must use this exact hostname)"
+  netsh http show sslcert hostnameport="localhost:$Port"
+  $certificates = @(Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq "ThalesBridge localhost $Port" })
+  if ($certificates.Count -eq 0) { Err 'Bridge TLS certificate missing'; $failures++ }
+  foreach ($cert in $certificates) {
+    Write-Host "Certificate: $($cert.Subject), expires $($cert.NotAfter), thumbprint $($cert.Thumbprint)"
+    if ($cert.NotAfter -le (Get-Date)) { Err 'TLS certificate expired: re-run the installer'; $failures++ }
+    elseif ($cert.NotAfter -lt (Get-Date).AddDays(30)) { Warn 'TLS certificate expires within 30 days: re-run the installer' }
+    if (-not (Test-Path "Cert:\LocalMachine\Root\$($cert.Thumbprint)")) { Err 'Certificate not trusted by this machine'; $failures++ }
+  }
+  Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+    Select-Object LocalAddress, LocalPort, State, OwningProcess | Format-Table | Out-String | Write-Host
+  Write-Host "`n--- Startup / process information ---"
+  Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue | Format-List LastRunTime, LastTaskResult, NextRunTime | Out-String | Write-Host
+  Get-Process ThalesBridge -ErrorAction SilentlyContinue | Select-Object Id, StartTime, Path | Format-List | Out-String | Write-Host
+  Write-Host "`n--- Thales integration ---"
+  if ($sdkVersionDir) {
+    Write-Host "SDK directory: $($sdkVersionDir.FullName)"
+    foreach ($dll in @('MMMReaderHighLevelAPI.dll', 'MMMReaderDotNet50.dll')) {
+      Get-ChildItem $sdkVersionDir.FullName -Filter $dll -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host "$($_.FullName) - version $($_.VersionInfo.FileVersion)" }
+    }
+    if (Test-Path $appIni) {
+      Write-Host "Capture configuration: $appIni"
+      Get-Content $appIni | Select-String '^(UVImage|IRImage|UVImageRear|IRImageRear|VisibleImage|RF|Barcode)[^=]*=' | ForEach-Object { Write-Host $_.Line }
+    }
+  }
+  if (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) {
+    Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+      Where-Object { $_.FriendlyName -match 'Thales|Gemalto|3M|QS2000|Document Reader' } |
+      Select-Object Status, Class, FriendlyName | Format-Table | Out-String | Write-Host
+  }
+  Write-Host 'Live reader state and scan/error events are shown in the desktop manager.'
+  Write-Host 'A successful WSS handshake confirms transport, not a successful physical document scan.'
 
   Write-Host ""
   if ($failures -eq 0) {
@@ -150,17 +205,8 @@ if ($Uninstall) {
     & $uninstaller -Port $Port
     exit $LASTEXITCODE
   }
-  Step "Uninstalling"
-  # Via cmd: these write to stderr when the task/reservation is already absent,
-  # and 5.1 turns native stderr into a NativeCommandError that 'Stop' makes fatal.
-  cmd /c "schtasks /end /tn $TaskName >nul 2>&1"
-  cmd /c "schtasks /delete /tn $TaskName /f >nul 2>&1"
-  Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
-  cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
-  if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
-  Write-Host "Uninstalled. (SDK and Application.ini were left untouched.)" -ForegroundColor Green
-  Write-Host "Note: log folders under %LOCALAPPDATA%\ThalesBridge were kept - uninstall.ps1 removes those too."
-  exit 0
+  Fail 'Download uninstall.ps1 alongside setup.ps1 to remove the bridge and its TLS configuration.'
+
 }
 
 # ---- 1. Thales SDK ---------------------------------------------------------
@@ -224,13 +270,34 @@ if (Test-Path (Join-Path $prebuilt 'ThalesBridge.exe')) {
   Write-Host "  publishing from source (self-contained, no .NET needed at runtime)..."
   dotnet publish $projDir -c Release -r win-x64 --self-contained true -o $prebuilt | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail 'dotnet publish failed (is ThalesBridge/libs/MMMReaderDotNet50.dll present?)' }
+  dotnet publish (Join-Path $scriptDir 'Manager\ThalesBridgeManager.csproj') -c Release -r win-x64 --self-contained true -o (Join-Path $scriptDir 'manager-out') | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail 'Manager publish failed.' }
+  Copy-Item (Join-Path $scriptDir 'manager-out\ThalesBridgeManager.exe') $prebuilt -Force
   $srcDir = $prebuilt
 } else {
   Fail "no prebuilt 'publish' folder next to this script and no .NET SDK to build one. Download 'publish.zip' from Bitbucket Downloads and extract it here as 'publish\', or install the .NET 8 SDK."
 }
-Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+  Disable-ScheduledTask -TaskName $TaskName | Out-Null
+  Stop-ScheduledTask -TaskName $TaskName
+}
+Get-Process ThalesBridge, ThalesBridgeManager -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 Copy-Item "$srcDir\*" $InstallDir -Recurse -Force
+Copy-Item (Join-Path $scriptDir 'setup.ps1') $InstallDir -Force
+if (Test-Path (Join-Path $scriptDir 'uninstall.ps1')) {
+  Copy-Item (Join-Path $scriptDir 'uninstall.ps1') $InstallDir -Force
+}
+@{ port = $Port } | ConvertTo-Json | Set-Content (Join-Path $InstallDir 'bridge-settings.json') -Encoding UTF8
+$managerPath = Join-Path $InstallDir 'ThalesBridgeManager.exe'
+if (-not (Test-Path $managerPath)) { Fail 'Desktop manager missing. Use the new complete installer or build-release script.' }
+$shell = New-Object -ComObject WScript.Shell
+foreach ($folder in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))) {
+  $shortcut = $shell.CreateShortcut((Join-Path $folder 'Thales Scanner Bridge.lnk'))
+  $shortcut.TargetPath = $managerPath
+  $shortcut.WorkingDirectory = $InstallDir
+  $shortcut.Save()
+}
 Write-Host "  installed to $InstallDir" -ForegroundColor Green
 
 # ---- 4. Launcher (SDK Bin on PATH + writable working dir) ------------------
@@ -244,16 +311,52 @@ set "PATH=$sdkBin;%PATH%"
 if not exist "%LOCALAPPDATA%\ThalesBridge" mkdir "%LOCALAPPDATA%\ThalesBridge"
 cd /d "%LOCALAPPDATA%\ThalesBridge"
 "$InstallDir\ThalesBridge.exe" $Port
+exit /b %ERRORLEVEL%
 "@ | Set-Content -Path $launcher -Encoding ASCII
 Write-Host "  wrote $launcher" -ForegroundColor Green
+
+# Each machine gets its own non-exportable localhost certificate. Never ship a
+# shared private key. Only replace bindings bearing this application's ID.
+Step "Configure localhost TLS"
+$tlsAppId = '{74299f38-bafe-4734-99f0-cd66a752a01e}'
+$binding = (cmd /c "netsh http show sslcert hostnameport=localhost:$Port 2>nul") -join "`n"
+$bindingExists = $LASTEXITCODE -eq 0
+if ($bindingExists -and $binding -notmatch [regex]::Escape($tlsAppId)) {
+  Fail "localhost:$Port already has a TLS binding owned by another application. Choose another port."
+}
+$friendlyName = "ThalesBridge localhost $Port"
+$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+  $_.FriendlyName -eq $friendlyName -and $_.HasPrivateKey -and
+  $_.NotAfter -gt (Get-Date).AddDays(30) -and $_.NotBefore -le (Get-Date)
+} | Sort-Object NotAfter -Descending | Select-Object -First 1
+if (-not $cert) {
+  $cert = New-SelfSignedCertificate -DnsName 'localhost' -CertStoreLocation 'Cert:\LocalMachine\My' `
+    -FriendlyName $friendlyName -Type SSLServerAuthentication -KeyAlgorithm RSA -KeyLength 2048 `
+    -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears(2)
+}
+# Trust only this machine's public certificate; no certificate-validation bypass.
+$rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+try {
+  $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+  $publicCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$cert.RawData)
+  $rootStore.Add($publicCert)
+} finally { $rootStore.Close() }
+if ($bindingExists) {
+  netsh http delete sslcert hostnameport="localhost:$Port" | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail 'Could not remove the previous bridge TLS binding.' }
+}
+netsh http add sslcert hostnameport="localhost:$Port" certhash=$($cert.Thumbprint) certstorename=MY appid=$tlsAppId | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'Could not register the localhost TLS certificate.' }
+Pass "TLS certificate valid until $($cert.NotAfter). Re-run setup before expiry to renew."
 
 # ---- 5. URL ACL so non-admin users can bind the port -----------------------
 Step "5/7 URL ACL for port $Port"
 # Via cmd: netsh writes to stderr when there is no existing reservation, and
 # 5.1 turns native stderr into a NativeCommandError that 'Stop' makes fatal.
-cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
-netsh http add urlacl url="http://localhost:$Port/" user='BUILTIN\Users' | Out-Null
-Write-Host "  granted BUILTIN\Users the right to listen on http://localhost:$Port/" -ForegroundColor Green
+cmd /c "netsh http delete urlacl url=https://localhost:$Port/ >nul 2>&1"
+netsh http add urlacl url="https://localhost:$Port/" user='BUILTIN\Users' | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'Could not register the HTTPS URL ACL.' }
+Write-Host "  granted BUILTIN\Users the right to listen on https://localhost:$Port/" -ForegroundColor Green
 
 # ---- 6. Scheduled task: start at boot (or at logon with -LogonStart) --------
 Step "6/7 Scheduled task"
@@ -267,7 +370,7 @@ Step "6/7 Scheduled task"
 $taskAction = New-ScheduledTaskAction -Execute $launcher
 $taskSettings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-  -ExecutionTimeLimit ([TimeSpan]::Zero)
+  -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 if ($LogonStart) {
   # Runs as whoever installed it, when they log on. Needs step 5's URL ACL to bind.
   $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
@@ -283,6 +386,7 @@ if ($LogonStart) {
 }
 Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $taskTrigger `
   -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+Enable-ScheduledTask -TaskName $TaskName | Out-Null
 if ($LogonStart) {
   Write-Host "  task '$TaskName' runs the bridge at logon (as $($taskPrincipal.UserId))." -ForegroundColor Green
 } else {
@@ -295,14 +399,14 @@ Start-ScheduledTask -TaskName $TaskName
 $listening = $false
 foreach ($i in 1..15) {
   Start-Sleep -Seconds 1
-  if (Test-NetConnection -ComputerName localhost -Port $Port -InformationLevel Quiet -WarningAction SilentlyContinue) {
+  if (Test-BridgeWebSocket) {
     $listening = $true; break
   }
 }
 if ($listening) {
-  Write-Host "`nSUCCESS - bridge is serving ws://localhost:$Port" -ForegroundColor Green
+  Write-Host "`nSUCCESS - bridge is serving wss://localhost:$Port" -ForegroundColor Green
   Write-Host "Plug in the reader if it isn't yet: the bridge retries every 10s until it appears."
   Write-Host "Run 'setup.ps1 -Doctor' any time to re-check this install without reinstalling."
 } else {
-  Fail "bridge did not open port $Port within 15s. Run `"$launcher`" in a console to see its error message, or 'setup.ps1 -Doctor' for a full diagnostic."
+  Fail "bridge did not complete a trusted WSS handshake after 15 attempts. Run `"$launcher`" in a console to see its error message, or 'setup.ps1 -Doctor' for a full diagnostic."
 }

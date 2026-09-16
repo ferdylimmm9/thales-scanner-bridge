@@ -23,7 +23,7 @@ string? debugLog = null;
 if (Array.IndexOf(args, "--debug-log") is var dbgIdx and >= 0 && dbgIdx + 1 < args.Length)
     debugLog = args[dbgIdx + 1];
 
-Console.WriteLine($"[bridge] Thales Document Reader bridge starting on ws://localhost:{port}"
+Console.WriteLine($"[bridge] Thales Document Reader bridge starting on wss://localhost:{port}"
     + (verbose ? " (verbose: logging contract frames)" : ""));
 
 await using var hub = new WebSocketHub(port);
@@ -56,7 +56,7 @@ scanner.StatusChanged += status =>
 };
 scanner.ScanCompleted += result =>
 {
-    Console.WriteLine($"[bridge] scan complete: {result.Mrz.LastName}, {result.Mrz.FirstName} ({result.Mrz.DocumentNumber})");
+    Console.WriteLine("[bridge] scan complete.");
     _ = Send(ScannerMessage.Result(result));
 };
 scanner.ScanError += (code, message) =>

@@ -3,7 +3,7 @@ setlocal
 title Thales Scanner Bridge Monitor
 
 echo Thales Scanner Bridge Monitor
-echo Connecting to ws://localhost:8765/ ...
+echo Connecting to wss://localhost:8765/ ...
 echo Press Ctrl+C to stop monitoring.
 echo.
 
@@ -36,7 +36,7 @@ $socket = New-Object System.Net.WebSockets.ClientWebSocket
 $cancel = [System.Threading.CancellationToken]::None
 
 try {
-    $socket.ConnectAsync([Uri]'ws://localhost:8765/', $cancel).GetAwaiter().GetResult()
+    $socket.ConnectAsync([Uri]'wss://localhost:8765/', $cancel).GetAwaiter().GetResult()
     Write-Host 'Bridge: CONNECTED' -ForegroundColor Green
 
     $buffer = New-Object byte[] (8 * 1024 * 1024)

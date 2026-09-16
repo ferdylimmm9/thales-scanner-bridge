@@ -1,16 +1,10 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 
 namespace ThalesBridge;
 
-/// <summary>
-/// Minimal localhost WebSocket server built on HttpListener (no ASP.NET dependency).
-/// Accepts browser clients and broadcasts JSON frames to all of them.
-/// This is the ONLY part of the bridge the React app talks to.
-/// </summary>
+/// <summary>Localhost-only HTTPS listener; HTTP.sys manages the TLS certificate.</summary>
 public sealed class WebSocketHub : IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -18,45 +12,33 @@ public sealed class WebSocketHub : IAsyncDisposable
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
-
     private readonly HttpListener _listener = new();
-    private readonly ConcurrentDictionary<Guid, WebSocket> _clients = new();
+    private readonly Dictionary<Guid, WebSocketClient> _clients = new();
+    private readonly HashSet<Task> _handlers = new();
+    private readonly object _gate = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly int _port;
-    private ScannerMessage _lastStatus = ScannerMessage.StatusMsg("idle");
+    private Task? _acceptTask;
+    private byte[] _lastStatus = Serialize(ScannerMessage.StatusMsg("idle"));
 
     public WebSocketHub(int port)
     {
+        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         _port = port;
-        // Localhost only — never bind to 0.0.0.0. The scanner PC serves only its own browser.
-        _listener.Prefixes.Add($"http://localhost:{port}/");
+        _listener.Prefixes.Add($"https://localhost:{port}/");
     }
 
-    /// <exception cref="InvalidOperationException">
-    /// Port unusable — the message says why (in use / needs urlacl) and how to fix it.
-    /// </exception>
     public void Start()
     {
-        try
-        {
-            _listener.Start();
-        }
+        try { _listener.Start(); }
         catch (HttpListenerException ex)
         {
-            // Turn the two setup failures every new machine can hit into actionable text.
-            var hint = ex.ErrorCode switch
-            {
-                5 => $"Access denied binding http://localhost:{_port}/ — this Windows user may not "
-                   + $"register the port. Fix (run once, as admin): "
-                   + $"netsh http add urlacl url=http://localhost:{_port}/ user={Environment.UserDomainName}\\{Environment.UserName}",
-                32 or 183 => $"Port {_port} is already in use — most likely another ThalesBridge instance "
-                           + $"is running. Find the owner with: netstat -ano | findstr :{_port}",
-                _ => $"Could not listen on http://localhost:{_port}/ (win32 error {ex.ErrorCode}): {ex.Message}",
-            };
-            throw new InvalidOperationException(hint, ex);
+            throw new InvalidOperationException(
+                $"Could not listen on https://localhost:{_port}/ (Windows error {ex.ErrorCode}). "
+                + "Run setup.ps1 as Administrator to configure the HTTPS URL ACL and TLS certificate; "
+                + $"check for another bridge with: netstat -ano | findstr :{_port}", ex);
         }
-
-        _ = AcceptLoopAsync();
+        _acceptTask = AcceptLoopAsync();
     }
 
     private async Task AcceptLoopAsync()
@@ -66,89 +48,80 @@ public sealed class WebSocketHub : IAsyncDisposable
             HttpListenerContext ctx;
             try { ctx = await _listener.GetContextAsync(); }
             catch (Exception) when (_cts.IsCancellationRequested) { break; }
-            catch (HttpListenerException) { break; }
-
+            catch (HttpListenerException ex)
+            {
+                Console.Error.WriteLine($"[bridge] listener failed: {ex.Message}");
+                // Let the scheduled task restart the process instead of silently staying offline.
+                Environment.Exit(1);
+                return;
+            }
             if (!ctx.Request.IsWebSocketRequest)
             {
-                ctx.Response.StatusCode = 426; // Upgrade Required
+                ctx.Response.StatusCode = 426;
                 ctx.Response.Close();
                 continue;
             }
-
-            _ = HandleClientAsync(ctx);
+            var handler = HandleClientAsync(ctx);
+            lock (_gate) _handlers.Add(handler);
+            _ = handler.ContinueWith(t => { lock (_gate) _handlers.Remove(t); }, TaskScheduler.Default);
         }
     }
 
     private async Task HandleClientAsync(HttpListenerContext ctx)
     {
-        WebSocketContext wsCtx;
-        try { wsCtx = await ctx.AcceptWebSocketAsync(subProtocol: null); }
-        catch { ctx.Response.StatusCode = 500; ctx.Response.Close(); return; }
-
-        var socket = wsCtx.WebSocket;
         var id = Guid.NewGuid();
-        _clients[id] = socket;
-
-        // Greet the new client with the current reader status so the UI is correct immediately.
-        await SendToAsync(socket, _lastStatus);
-
+        WebSocketClient? client = null;
         try
         {
-            // We don't expect client->server messages in v1, but we must drain to detect close.
-            var buffer = new byte[1024];
-            while (socket.State == WebSocketState.Open && !_cts.IsCancellationRequested)
+            using var abortHandshake = _cts.Token.Register(() => { try { ctx.Response.Abort(); } catch { } });
+            var ws = await ctx.AcceptWebSocketAsync(null, 4096, TimeSpan.FromSeconds(20));
+            client = new WebSocketClient(ws.WebSocket);
+            lock (_gate)
             {
-                var res = await socket.ReceiveAsync(buffer, _cts.Token);
-                if (res.MessageType == WebSocketMessageType.Close) break;
+                if (_cts.IsCancellationRequested) return;
+                // Queue greeting before making this client visible to scanner callbacks.
+                client.Enqueue(_lastStatus);
+                _clients.Add(id, client);
             }
+            Console.WriteLine($"[bridge] browser connected ({id}).");
+            await client.RunAsync(_cts.Token);
         }
-        catch { /* client vanished */ }
+        catch (Exception ex)
+        {
+            if (!_cts.IsCancellationRequested)
+                Console.WriteLine($"[bridge] browser {id}: {ex.Message}");
+            if (client == null) { try { ctx.Response.Abort(); } catch { } }
+        }
         finally
         {
-            _clients.TryRemove(id, out _);
-            try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); }
-            catch { /* already gone */ }
-            socket.Dispose();
+            lock (_gate) _clients.Remove(id);
+            client?.Dispose();
+            Console.WriteLine($"[bridge] browser disconnected ({id}).");
         }
     }
 
-    /// <summary>Broadcast a frame to every connected client. Called from scanner callbacks.</summary>
-    public async Task BroadcastAsync(ScannerMessage message)
+    public Task BroadcastAsync(ScannerMessage message)
     {
-        if (message.Type == "status") _lastStatus = message;
-
-        var payload = JsonSerializer.SerializeToUtf8Bytes(message, JsonOpts);
-        foreach (var (id, socket) in _clients)
+        lock (_gate)
         {
-            if (socket.State != WebSocketState.Open) { _clients.TryRemove(id, out _); continue; }
-            try
-            {
-                await socket.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, _cts.Token);
-            }
-            catch
-            {
-                _clients.TryRemove(id, out _);
-            }
+            if (_cts.IsCancellationRequested) return Task.CompletedTask;
+            var payload = Serialize(message);
+            if (message.Type == "status") _lastStatus = payload;
+            foreach (var client in _clients.Values) client.Enqueue(payload);
         }
+        return Task.CompletedTask;
     }
 
-    private static async Task SendToAsync(WebSocket socket, ScannerMessage message)
-    {
-        var payload = JsonSerializer.SerializeToUtf8Bytes(message, JsonOpts);
-        try { await socket.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None); }
-        catch { /* ignore */ }
-    }
+    private static byte[] Serialize(ScannerMessage message) => JsonSerializer.SerializeToUtf8Bytes(message, JsonOpts);
 
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
-        foreach (var (_, socket) in _clients)
-        {
-            try { await socket.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, "shutdown", CancellationToken.None); }
-            catch { /* ignore */ }
-        }
-        try { _listener.Stop(); } catch { /* ignore */ }
         _listener.Close();
+        if (_acceptTask != null) await _acceptTask;
+        Task[] handlers;
+        lock (_gate) handlers = _handlers.ToArray();
+        await Task.WhenAll(handlers);
         _cts.Dispose();
     }
 }

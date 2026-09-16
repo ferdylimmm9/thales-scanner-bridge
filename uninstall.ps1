@@ -81,7 +81,7 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
 # ---- 2. Running process ----------------------------------------------------
 # The task may run as SYSTEM (boot-start), so this needs the elevation above.
 Step "2/5 Running process"
-$proc = Get-Process ThalesBridge -ErrorAction SilentlyContinue
+$proc = Get-Process ThalesBridge, ThalesBridgeManager -ErrorAction SilentlyContinue
 if ($proc) {
   $proc | Stop-Process -Force -Confirm:$false
   Done "stopped ThalesBridge.exe (PID $($proc.Id -join ', '))"
@@ -92,12 +92,29 @@ Step "3/5 URL ACL for port $Port"
 # Match the URL itself, not netsh's surrounding prose - that prose is localised
 # and a non-English Windows would otherwise look like "nothing reserved".
 # Routed through cmd for the same NativeCommandError reason as step 1.
-$url = "http://localhost:$Port/"
-$acl = (cmd /c "netsh http show urlacl url=$url 2>nul") -join "`n"
-if ($acl -match [regex]::Escape($url)) {
+foreach ($scheme in @('http', 'https')) {
+  $url = "${scheme}://localhost:$Port/"
   cmd /c "netsh http delete urlacl url=$url >nul 2>&1"
-  Done "removed reservation for $url"
-} else { Skip "no reservation for $url (was it installed on another port?)" }
+}
+$tlsAppId = '{74299f38-bafe-4734-99f0-cd66a752a01e}'
+$binding = (cmd /c "netsh http show sslcert hostnameport=localhost:$Port 2>nul") -join "`n"
+if ($binding -match [regex]::Escape($tlsAppId)) {
+  netsh http delete sslcert hostnameport="localhost:$Port" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Could not remove the bridge TLS binding.' }
+}
+# Remove only certificates created by setup for this port (including old renewals).
+Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+  $_.FriendlyName -eq "ThalesBridge localhost $Port"
+} | ForEach-Object {
+  $thumbprint = $_.Thumbprint
+  Remove-Item "Cert:\LocalMachine\Root\$thumbprint" -ErrorAction SilentlyContinue
+  Remove-Item "Cert:\LocalMachine\My\$thumbprint"
+}
+Done 'removed bridge URL reservations and TLS configuration'
+
+foreach ($folder in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))) {
+  Remove-Item (Join-Path $folder 'Thales Scanner Bridge.lnk') -ErrorAction SilentlyContinue
+}
 
 # ---- 4. Install directory --------------------------------------------------
 Step "4/5 Install directory"

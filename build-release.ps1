@@ -26,6 +26,13 @@ try {
     --self-contained true -p:Version=$Version -o $publishDir
   if ($LASTEXITCODE -ne 0) { throw 'Bridge publish failed.' }
 
+  $managerOut = Join-Path $root 'manager-out'
+  dotnet publish (Join-Path $root 'Manager\ThalesBridgeManager.csproj') -c Release -r win-x64 `
+    --self-contained true -p:Version=$Version -o $managerOut
+  if ($LASTEXITCODE -ne 0) { throw 'Desktop manager publish failed.' }
+  Copy-Item (Join-Path $managerOut 'ThalesBridgeManager.exe') $publishDir -Force
+  Remove-Item $managerOut -Recurse -Force
+
   Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $publishZip -Force
 
   New-Item -ItemType Directory -Force (Join-Path $payloadDir 'publish') | Out-Null

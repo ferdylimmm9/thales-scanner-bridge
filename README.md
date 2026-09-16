@@ -1,7 +1,58 @@
 # thales-scanner-bridge
 
+## Secure desktop release
+
+The bridge now uses **`wss://localhost:8765/`**. Update the frontend's
+`NEXT_PUBLIC_THALES_BRIDGE_URL` to this URL and rebuild/redeploy that frontend.
+The frontend lives in a separate repository and is not updated by this installer.
+Do not use `127.0.0.1`: the certificate is issued for `localhost`.
+
+Run the new **ThalesBridgeSetup.exe** as administrator on each Windows scanner PC,
+including PCs with an older bridge installed. Setup installs a unique, non-exportable
+localhost TLS key, trusts its public certificate on that PC, configures HTTP.sys,
+and installs **Thales Scanner Bridge** shortcuts on the desktop and Start menu.
+Changing the URL without rerunning setup will not enable TLS.
+This follows Microsoft's [HttpListener certificate requirements](https://learn.microsoft.com/en-us/dotnet/api/system.net.httplistener)
+and [HTTP.sys SSL binding configuration](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-http).
+
+The desktop manager opens after installation and provides:
+
+- Live WSS status, connection attempts, successful connections, received frame count and last frame time.
+- Thales reader status, completed scans, last scan time, and retained last error.
+- Start, Stop, Restart, Enable auto-start, and Diagnostics controls.
+- Diagnostics for TLS trust/expiry/binding, port ownership, task execution, bridge version/process,
+  SDK location/version, capture settings, and matching Windows device names.
+
+Manager counters cover its current session. Device-name detection is best effort;
+reader readiness comes from live SDK events. Document photos and identity fields are
+not displayed in the manager. Diagnostics run on opening and on demand; live status
+updates continuously. The manager requests Windows administrator access for task management.
+Closing it leaves the bridge running. Stop stops the current run; automatic startup
+remains enabled. Start at boot is the default, with three one-minute restart attempts
+on process failure. After those attempts, use Restart or inspect Diagnostics.
+A computer that is powered off cannot serve requests; the bridge starts after Windows boots.
+
+The local certificate expires after two years. Re-run setup within 30 days of expiry
+to renew it. Browsers managed with separate trust policies may need IT to allow this
+machine's certificate. No certificate-validation bypass is used.
+
+For deployment verification, reboot the Windows PC, open the manager, confirm WSS and
+reader readiness, scan/remove/reinsert a document several times, unplug/replug USB,
+then restart the bridge while the frontend is open. The frontend must reconnect on
+close/error (recommended bounded exponential backoff); that client code is outside
+this repository. A healthy WSS connection alone does not prove optical scanning works.
+If repeat scans fail, fully remove the document before replacing it, close other SDK
+applications, and inspect the reader error and SDK settings. Hardware/placement issues
+must be reproduced on a reader; they cannot be verified by this build.
+
+Build all Windows executables: `./build-release.sh 0.0.0-wss-preview.1` or
+`./build-release.ps1 -Version 0.0.0-wss-preview.1`.
+Run transport regression checks: `dotnet run --project tests/TransportChecks.csproj`.
+
+
+
 WebSocket bridge for the **Thales Gemalto Document Reader QS2000** — turns
-MRZ / ePassport / ID scans into JSON over `ws://localhost` for any web app.
+MRZ / ePassport / ID scans into JSON over `wss://localhost` for any web app.
 Built on the Thales FullPage SDK; likely compatible with other FullPage-API
 readers (AT9000 MK2, AT10K, CR5400, KR9000, ...) though only the QS2000 has
 been physically verified — see [Supported hardware](#supported-hardware).
@@ -14,7 +65,7 @@ been physically verified — see [Supported hardware](#supported-hardware).
 > This README covers building and operating the bridge itself.
 
 ```
-[Thales QS2000] --USB--> [ThalesBridge.exe]  --ws://localhost:8765-->  [your web app]
+[Thales QS2000] --USB--> [ThalesBridge.exe]  --wss://localhost:8765-->  [your web app]
    driver               wraps MMMReaderDotNet50.dll,                   any WebSocket client
                         emits DocumentScanResult JSON                   (see CONTRACT.md)
 ```
@@ -91,7 +142,7 @@ Place a supported document on the reader. A successful test changes from **readi
 document** to **scan completed**, then returns to **connected and ready**.
 
 After closing setup, double-click [`monitor-bridge.bat`](monitor-bridge.bat) to continue
-monitoring `ws://localhost:8765/`. It reports status, completed scans, and errors without
+monitoring `wss://localhost:8765/`. It reports status, completed scans, and errors without
 printing names, document numbers, or document images. Press `Ctrl+C` to stop it. The
 window remains open after a connection or script error so the message can be reviewed.
 
@@ -151,7 +202,7 @@ factory settings back.
 ### Auto-start: boot vs logon
 
 By default the bridge starts **at boot, running as `SYSTEM`** — power the PC on and
-`ws://localhost:8765` is serving before anyone logs in, which is what you want on an
+`wss://localhost:8765` is serving before anyone logs in, which is what you want on an
 unattended kiosk. The reader does not have to be plugged in at boot: the bridge retries
 reader init every 10s until it appears.
 
@@ -236,7 +287,7 @@ run the exe with the SDK `Bin` folder as the working directory, or copy those DL
 ```powershell
 cd ThalesBridge
 dotnet build -c Release
-dotnet run -c Release                       # serves ws://localhost:8765
+dotnet run -c Release                       # serves wss://localhost:8765
 dotnet run -c Release -- 9000               # custom port
 dotnet run -c Release -- 8765 --verbose     # + log every outgoing JSON frame
 dotnet run -c Release -- 8765 --debug-log C:\temp\sdk.log   # + full SDK diagnostics (level 5)
@@ -293,7 +344,7 @@ placed on the glass.
 
 `WebSocketHub.cs` uses `System.Net.HttpListener` (built into .NET — no ASP.NET dependency):
 
-1. Listens on `http://localhost:<port>/` (**localhost only**, never `0.0.0.0`).
+1. Listens on `https://localhost:<port>/` (**localhost only**, never `0.0.0.0`).
 2. Upgrades incoming requests via `AcceptWebSocketAsync`.
 3. Keeps a thread-safe set of connected browser sockets.
 4. `BroadcastAsync(...)` pushes each scanner event to every client; new clients immediately

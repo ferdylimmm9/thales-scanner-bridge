@@ -17,7 +17,7 @@ internal static class Program
     }
 }
 
-internal sealed class InstallerForm : Form
+internal sealed partial class InstallerForm : Form
 {
     private const string SdkRoot = @"C:\Program Files\Thales\Thales Document Reader SDK x64";
 
@@ -38,9 +38,20 @@ internal sealed class InstallerForm : Form
     private Task? monitorTask;
     private bool installSucceeded;
     private int completedScans;
+    private int connectionAttempts;
+    private int connectionsOpened;
+    private int framesReceived;
+    private readonly Label connectionDetails = new();
+    private readonly Label scanDetails = new();
+    private readonly Label lastError = new();
+    private string? previousScannerStatus;
+
 
     public InstallerForm()
     {
+#if BRIDGE_MANAGER
+        InitializeManagerView();
+#else
         Text = "Thales Scanner Bridge Setup";
         ClientSize = new Size(720, 690);
         MinimumSize = new Size(650, 640);
@@ -164,6 +175,7 @@ internal sealed class InstallerForm : Form
             if (installerProcess is null)
                 StartMonitor((int)port.Value);
         };
+#endif
     }
 
     private void BrowseForSdk(object? sender, EventArgs e)
@@ -249,11 +261,12 @@ internal sealed class InstallerForm : Form
                 throw new InvalidOperationException($"Installation failed with exit code {installerProcess.ExitCode}. See the log above.");
 
             installSucceeded = true;
-            status.Text = $"Installed successfully. Bridge URL: ws://localhost:{(int)port.Value}";
+            status.Text = $"Installed successfully. Bridge URL: wss://localhost:{(int)port.Value}";
             status.ForeColor = Color.DarkGreen;
             install.Text = "Installed";
             AppendLog("Installation completed successfully.");
             StartMonitor((int)port.Value);
+            Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "ThalesBridge", "ThalesBridgeManager.exe")) { UseShellExecute = true });
             MessageBox.Show(this, "Thales Scanner Bridge was installed successfully.",
                 "Setup complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -295,11 +308,21 @@ internal sealed class InstallerForm : Form
         {
             SetConnectionLabel(bridgeConnection, $"Bridge: connecting to localhost:{bridgePort}...", Color.DarkOrange);
 
+            connectionAttempts++;
+            SetConnectionLabel(connectionDetails, $"Connection attempts: {connectionAttempts} | Successful connections: {connectionsOpened} | Frames: {framesReceived}", Color.DimGray);
             using var socket = new ClientWebSocket();
             socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
             try
             {
-                await socket.ConnectAsync(new Uri($"ws://localhost:{bridgePort}/"), cancellationToken);
+                var handshake = Stopwatch.StartNew();
+                using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                connectTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await socket.ConnectAsync(new Uri($"wss://localhost:{bridgePort}/"), connectTimeout.Token);
+                handshake.Stop();
+                connectionsOpened++;
+                AppendLog($"TLS/WebSocket handshake: {handshake.ElapsedMilliseconds} ms; certificate validation passed.");
+                AppendLog($"{DateTime.Now:T} WebSocket connected: wss://localhost:{bridgePort}/");
+                SetConnectionLabel(connectionDetails, $"Connected at {DateTime.Now:T} | Attempts: {connectionAttempts} | Successful connections: {connectionsOpened}", Color.DimGray);
                 SetConnectionLabel(bridgeConnection, $"Bridge: connected on port {bridgePort}", Color.DarkGreen);
                 SetActivity("Activity: bridge connected; waiting for scanner status", Color.DimGray);
 
@@ -307,7 +330,9 @@ internal sealed class InstallerForm : Form
                 {
                     var message = await ReceiveMessageAsync(socket, cancellationToken);
                     if (message is null)
-                        break;
+                        throw new WebSocketException("The bridge closed the connection.");
+                    framesReceived++;
+                    SetConnectionLabel(connectionDetails, $"Last frame: {DateTime.Now:T} | Frames: {framesReceived} | Attempts: {connectionAttempts} | Connections: {connectionsOpened}", Color.DimGray);
                     ProcessBridgeMessage(message);
                 }
             }
@@ -315,9 +340,12 @@ internal sealed class InstallerForm : Form
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                SetConnectionLabel(bridgeConnection, $"Bridge: not running on port {bridgePort}", Color.DarkRed);
+                SetConnectionLabel(lastError, $"Last connection error ({DateTime.Now:T}): {ex.Message}", Color.DarkRed);
+                if (connectionAttempts == 1 || connectionAttempts % 15 == 0)
+                    AppendLog($"{DateTime.Now:T} Connection failed (attempt {connectionAttempts}): {ex.Message}");
+                SetConnectionLabel(bridgeConnection, $"Bridge: connection failed on port {bridgePort} (check TLS/setup)", Color.DarkRed);
                 SetConnectionLabel(scannerConnection, "Scanner: unavailable until bridge starts", Color.DimGray);
                 SetActivity("Activity: waiting for installation or bridge startup", Color.DimGray);
             }
@@ -375,11 +403,16 @@ internal sealed class InstallerForm : Form
                     var scannerStatus = root.TryGetProperty("status", out var statusElement)
                         ? statusElement.GetString()
                         : null;
+                    if (previousScannerStatus != scannerStatus)
+                        AppendLog($"{DateTime.Now:T} Reader status: {scannerStatus}");
+                    previousScannerStatus = scannerStatus;
                     ShowScannerStatus(scannerStatus);
                     break;
 
                 case "result":
                     completedScans++;
+                    SetConnectionLabel(scanDetails, $"Completed scans: {completedScans} | Last completed: {DateTime.Now:T}", Color.DarkGreen);
+                    AppendLog($"{DateTime.Now:T} Document scan completed ({completedScans} this session).");
                     SetConnectionLabel(scannerConnection, "Scanner: connected and ready", Color.DarkGreen);
                     SetActivity(
                         $"Activity: scan completed at {DateTime.Now:T} ({completedScans} this session)",
@@ -395,6 +428,8 @@ internal sealed class InstallerForm : Form
                         : "Unknown scanner error";
                     if (code is "SCANNER_NOT_CONNECTED" or "READER_DISCONNECTED")
                         SetConnectionLabel(scannerConnection, "Scanner: disconnected", Color.DarkRed);
+                    SetConnectionLabel(lastError, $"Last reader error ({DateTime.Now:T}): {code} - {message}", Color.DarkRed);
+                    AppendLog($"{DateTime.Now:T} Reader error: {code} - {message}");
                     SetActivity($"Activity: {code} - {message}", Color.DarkRed);
                     break;
             }
@@ -452,11 +487,14 @@ internal sealed class InstallerForm : Form
 
     private void AppendLog(string text)
     {
+        if (IsDisposed) return;
         if (InvokeRequired)
         {
-            BeginInvoke(new Action(() => AppendLog(text)));
+            try { BeginInvoke(new Action(() => AppendLog(text))); }
+            catch (InvalidOperationException) { }
             return;
         }
+        if (log.TextLength > 100_000) log.Clear();
         log.AppendText(text + Environment.NewLine);
         log.SelectionStart = log.TextLength;
         log.ScrollToCaret();

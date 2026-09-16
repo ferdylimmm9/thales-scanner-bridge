@@ -53,6 +53,17 @@ The SDK permits only one application to control the reader at a time.
 ## Installed behavior
 
 - Installation directory: `C:\Program Files\ThalesBridge`
-- Local WebSocket: `ws://localhost:8765`
+- Local WebSocket: `wss://localhost:8765`
 - Default startup: at Windows boot as `SYSTEM`
 - The bridge retries automatically when the reader is disconnected
+
+
+### Updated secure installer
+
+Reinstall with the new `ThalesBridgeSetup.exe` on every scanner PC, then set the
+frontend URL to `wss://localhost:8765/`. Setup creates/trusts the local TLS certificate.
+Open **Thales Scanner Bridge** from the desktop for connection details, Thales status,
+Start/Stop/Restart, Enable auto-start, and Diagnostics. Closing the window leaves the
+bridge running. The default startup task starts at Windows boot and retries on failure.
+The manager opens automatically after installation. Use Diagnostics to check certificate
+expiry and rerun setup before it expires. Verify a reboot and repeated scans on the actual PC.

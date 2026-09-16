@@ -28,6 +28,12 @@ dotnet publish "$root/ThalesBridge" \
   -c Release -r win-x64 --self-contained true \
   -p:EnableWindowsTargeting=true -p:Version="$version" -o "$publish_dir"
 
+dotnet publish "$root/Manager/ThalesBridgeManager.csproj" \
+  -c Release -r win-x64 --self-contained true \
+  -p:Version="$version" -o "$root/manager-out"
+cp "$root/manager-out/ThalesBridgeManager.exe" "$publish_dir/"
+rm -rf "$root/manager-out"
+
 (
   cd "$publish_dir"
   zip -q -r "$publish_zip" .

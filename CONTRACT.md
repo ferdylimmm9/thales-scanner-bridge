@@ -7,7 +7,7 @@ everything a client needs is on this page.
 **Status:** v1, stable. Verified against a QS2000 reader with real passports (2026-07-14).
 
 ```
-[Thales reader] --USB--> [ThalesBridge.exe on the kiosk PC] --ws://localhost:8765--> [your web app]
+[Thales reader] --USB--> [ThalesBridge.exe on the kiosk PC] --wss://localhost:8765--> [your web app]
 ```
 
 ## 1. Transport
@@ -15,7 +15,7 @@ everything a client needs is on this page.
 | Property | Value |
 | --- | --- |
 | Protocol | WebSocket (RFC 6455), text frames only |
-| URL | `ws://localhost:<port>/` — default port **8765** (bridge CLI arg 1 overrides) |
+| URL | `wss://localhost:<port>/` — default port **8765** (bridge CLI arg 1 overrides) |
 | Reachability | **localhost only** by design. Your app must run in a browser on the same PC as the scanner. |
 | Direction | **Server → client only.** The bridge accepts no commands in v1; anything the client sends is ignored. |
 | Concurrency | Multiple clients may connect at once; every frame is broadcast to all of them. |
@@ -156,7 +156,7 @@ to `waiting_for_document`. Clients should surface the message and keep listening
 ### Minimal vanilla-JS client
 
 ```js
-const ws = new WebSocket('ws://localhost:8765')
+const ws = new WebSocket('wss://localhost:8765')
 ws.onmessage = (e) => {
   const msg = JSON.parse(e.data)
   switch (msg.type) {
