@@ -43,6 +43,7 @@ param(
   [switch]$SkipUvIrPatch,
   [switch]$LogonStart,
   [switch]$Doctor,
+  [switch]$ConfigureEndpoint,
   [switch]$Uninstall
 )
 
@@ -71,6 +72,64 @@ function Test-BridgeWebSocket {
     $socket.Abort()
     $socket.Dispose()
     $timeout.Dispose()
+  }
+}
+
+function Set-BridgeTls {
+  param([int]$Port)
+Step "Configure localhost TLS"
+$tlsAppId = '{74299f38-bafe-4734-99f0-cd66a752a01e}'
+$binding = (cmd /c "netsh http show sslcert hostnameport=localhost:$Port 2>nul") -join "`n"
+$bindingExists = $LASTEXITCODE -eq 0
+if ($bindingExists -and $binding -notmatch [regex]::Escape($tlsAppId)) {
+  throw "localhost:$Port already has a TLS binding owned by another application. Choose another port."
+}
+$friendlyName = "ThalesBridge localhost $Port"
+$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+  $_.FriendlyName -eq $friendlyName -and $_.HasPrivateKey -and
+  $_.NotAfter -gt (Get-Date).AddDays(30) -and $_.NotBefore -le (Get-Date)
+} | Sort-Object NotAfter -Descending | Select-Object -First 1
+if (-not $cert) {
+  $cert = New-SelfSignedCertificate -DnsName 'localhost' -CertStoreLocation 'Cert:\LocalMachine\My' `
+    -FriendlyName $friendlyName -Type SSLServerAuthentication -KeyAlgorithm RSA -KeyLength 2048 `
+    -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears(2)
+}
+# Trust only this machine's public certificate; no certificate-validation bypass.
+$rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+try {
+  $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+  $publicCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$cert.RawData)
+  $rootStore.Add($publicCert)
+} finally { $rootStore.Close() }
+if ($bindingExists) {
+  netsh http delete sslcert hostnameport="localhost:$Port" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Could not remove the previous bridge TLS binding.' }
+}
+netsh http add sslcert hostnameport="localhost:$Port" certhash=$($cert.Thumbprint) certstorename=MY appid=$tlsAppId | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not register the localhost TLS certificate.' }
+Pass "TLS certificate valid until $($cert.NotAfter). Re-run setup before expiry to renew."
+
+# ---- 5. URL ACL so non-admin users can bind the port -----------------------
+Step "5/7 URL ACL for port $Port"
+# Via cmd: netsh writes to stderr when there is no existing reservation, and
+# 5.1 turns native stderr into a NativeCommandError that 'Stop' makes fatal.
+cmd /c "netsh http delete urlacl url=https://localhost:$Port/ >nul 2>&1"
+netsh http add urlacl url="https://localhost:$Port/" user='BUILTIN\Users' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not register the HTTPS URL ACL.' }
+Write-Host "  granted BUILTIN\Users the right to listen on https://localhost:$Port/" -ForegroundColor Green
+
+}
+
+function Remove-BridgeTls {
+  param([int]$Port)
+  $binding = (cmd /c "netsh http show sslcert hostnameport=localhost:$Port 2>nul") -join "`n"
+  if ($binding -notmatch '74299f38-bafe-4734-99f0-cd66a752a01e') { return }
+  netsh http delete sslcert hostnameport="localhost:$Port" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Could not remove old TLS binding on port $Port" }
+  cmd /c "netsh http delete urlacl url=https://localhost:$Port/ >nul 2>&1"
+  Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq "ThalesBridge localhost $Port" } | ForEach-Object {
+    Remove-Item "Cert:\LocalMachine\Root\$($_.Thumbprint)" -ErrorAction SilentlyContinue
+    Remove-Item $_.PSPath
   }
 }
 
@@ -209,6 +268,59 @@ if ($Uninstall) {
 
 }
 
+# Update an installed endpoint without reinstalling binaries or changing SDK settings.
+if ($ConfigureEndpoint) {
+  $settingsPath = Join-Path $InstallDir 'bridge-settings.json'
+  $launcherPath = Join-Path $InstallDir 'run-bridge.cmd'
+  $settingsBytes = [IO.File]::ReadAllBytes($settingsPath)
+  $launcherBytes = [IO.File]::ReadAllBytes($launcherPath)
+  $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+  $oldPort = [int]$settings.port
+  if ($oldPort -eq $Port) { Pass 'Endpoint is already configured'; exit 0 }
+  $task = Get-ScheduledTask -TaskName $TaskName
+  if ($task.State -eq 'Disabled') { Fail 'Enable auto-start or start the bridge before changing the endpoint.' }
+  $wasRunning = $task.State -eq 'Running'
+  if (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue) {
+    Fail "Port $Port is already in use. Choose another port."
+  }
+  $launcherText = [IO.File]::ReadAllText($launcherPath)
+  $commandPattern = '(?m)^' + [regex]::Escape('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $oldPort) + '(?=\r?$)'
+  if ($launcherText -notmatch $commandPattern) { Fail 'Launcher format is not recognized. Re-run the installer to repair it.' }
+  $newLauncher = [regex]::Replace($launcherText, $commandPattern, ('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $Port))
+  # New binding is prepared before interrupting the current connection.
+  Set-BridgeTls -Port $Port
+  try {
+    Disable-ScheduledTask -TaskName $TaskName | Out-Null
+    Stop-ScheduledTask -TaskName $TaskName
+    Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force
+    [IO.File]::WriteAllText($launcherPath, $newLauncher, [Text.Encoding]::ASCII)
+    Enable-ScheduledTask -TaskName $TaskName | Out-Null
+    Start-ScheduledTask -TaskName $TaskName
+    $connected = $false
+    foreach ($attempt in 1..10) {
+      Start-Sleep -Seconds 1
+      if (Test-BridgeWebSocket) { $connected = $true; break }
+    }
+    if (-not $connected) { throw "Trusted WSS handshake failed on port $Port" }
+    $settings.port = $Port
+    $settings | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
+  } catch {
+    $failure = $_.Exception.Message
+    Disable-ScheduledTask -TaskName $TaskName | Out-Null
+    Stop-ScheduledTask -TaskName $TaskName
+    Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force
+    [IO.File]::WriteAllBytes($launcherPath, $launcherBytes)
+    [IO.File]::WriteAllBytes($settingsPath, $settingsBytes)
+    Enable-ScheduledTask -TaskName $TaskName | Out-Null
+    if ($wasRunning) { Start-ScheduledTask -TaskName $TaskName }
+    try { Remove-BridgeTls -Port $Port } catch { Warn $_.Exception.Message }
+    Fail "$failure. Restored endpoint wss://localhost:$oldPort/."
+  }
+  try { Remove-BridgeTls -Port $oldPort } catch { Warn "Endpoint changed, but old TLS cleanup failed: $($_.Exception.Message)" }
+  Pass "Endpoint changed to wss://localhost:$Port/. Update the frontend URL to match."
+  exit 0
+}
+
 # ---- 1. Thales SDK ---------------------------------------------------------
 Step "1/7 Thales Document Reader SDK"
 $sdkRoot = 'C:\Program Files\Thales\Thales Document Reader SDK x64'
@@ -315,48 +427,7 @@ exit /b %ERRORLEVEL%
 "@ | Set-Content -Path $launcher -Encoding ASCII
 Write-Host "  wrote $launcher" -ForegroundColor Green
 
-# Each machine gets its own non-exportable localhost certificate. Never ship a
-# shared private key. Only replace bindings bearing this application's ID.
-Step "Configure localhost TLS"
-$tlsAppId = '{74299f38-bafe-4734-99f0-cd66a752a01e}'
-$binding = (cmd /c "netsh http show sslcert hostnameport=localhost:$Port 2>nul") -join "`n"
-$bindingExists = $LASTEXITCODE -eq 0
-if ($bindingExists -and $binding -notmatch [regex]::Escape($tlsAppId)) {
-  Fail "localhost:$Port already has a TLS binding owned by another application. Choose another port."
-}
-$friendlyName = "ThalesBridge localhost $Port"
-$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
-  $_.FriendlyName -eq $friendlyName -and $_.HasPrivateKey -and
-  $_.NotAfter -gt (Get-Date).AddDays(30) -and $_.NotBefore -le (Get-Date)
-} | Sort-Object NotAfter -Descending | Select-Object -First 1
-if (-not $cert) {
-  $cert = New-SelfSignedCertificate -DnsName 'localhost' -CertStoreLocation 'Cert:\LocalMachine\My' `
-    -FriendlyName $friendlyName -Type SSLServerAuthentication -KeyAlgorithm RSA -KeyLength 2048 `
-    -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears(2)
-}
-# Trust only this machine's public certificate; no certificate-validation bypass.
-$rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
-try {
-  $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-  $publicCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(,$cert.RawData)
-  $rootStore.Add($publicCert)
-} finally { $rootStore.Close() }
-if ($bindingExists) {
-  netsh http delete sslcert hostnameport="localhost:$Port" | Out-Null
-  if ($LASTEXITCODE -ne 0) { Fail 'Could not remove the previous bridge TLS binding.' }
-}
-netsh http add sslcert hostnameport="localhost:$Port" certhash=$($cert.Thumbprint) certstorename=MY appid=$tlsAppId | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'Could not register the localhost TLS certificate.' }
-Pass "TLS certificate valid until $($cert.NotAfter). Re-run setup before expiry to renew."
-
-# ---- 5. URL ACL so non-admin users can bind the port -----------------------
-Step "5/7 URL ACL for port $Port"
-# Via cmd: netsh writes to stderr when there is no existing reservation, and
-# 5.1 turns native stderr into a NativeCommandError that 'Stop' makes fatal.
-cmd /c "netsh http delete urlacl url=https://localhost:$Port/ >nul 2>&1"
-netsh http add urlacl url="https://localhost:$Port/" user='BUILTIN\Users' | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'Could not register the HTTPS URL ACL.' }
-Write-Host "  granted BUILTIN\Users the right to listen on https://localhost:$Port/" -ForegroundColor Green
+Set-BridgeTls -Port $Port
 
 # ---- 6. Scheduled task: start at boot (or at logon with -LogonStart) --------
 Step "6/7 Scheduled task"

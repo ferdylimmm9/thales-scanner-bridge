@@ -4,6 +4,7 @@
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Installer/EndpointSettings.cs" Link="EndpointSettings.cs" />
     <Compile Include="../ThalesBridge/WebSocketClient.cs" Link="WebSocketClient.cs" />
   </ItemGroup>
 </Project>

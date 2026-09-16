@@ -20,6 +20,8 @@ The desktop manager opens after installation and provides:
 - Live WSS status, connection attempts, successful connections, received frame count and last frame time.
 - Thales reader status, completed scans, last scan time, and retained last error.
 - Start, Stop, Restart, Enable auto-start, and Diagnostics controls.
+- Editable local secure endpoint with validation, certificate binding updates, restart/handshake verification, and rollback on verification failure.
+- Soft status colors and a moving progress indicator while the reader is scanning.
 - Diagnostics for TLS trust/expiry/binding, port ownership, task execution, bridge version/process,
   SDK location/version, capture settings, and matching Windows device names.
 
@@ -414,3 +416,13 @@ automatically create a Bitbucket Downloads release.
 - `CD_SCDG*_VALIDATE` chip validation — `ScannerService.cs` hard-codes
   `Verified = true` when a validate data item arrives; read the real
   pass/fail from the payload before trusting `chip.verified` downstream.
+
+### Editing the endpoint
+
+In the desktop manager, enter `wss://localhost:9000/` (or another free port) and select
+**Apply endpoint**. This changes the local server, updates Windows TLS configuration,
+restarts the bridge, and verifies the secure handshake before saving the new setting.
+The previous launcher/settings are restored if verification fails. Remote hosts, insecure
+`ws://` URLs, custom paths, credentials, query strings, and fragments are rejected.
+Then change Player 360's scanner connection setting to the same URL. A browser setting
+does not reconfigure the Windows bridge, and a desktop change does not update browsers.

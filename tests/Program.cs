@@ -7,6 +7,11 @@ static void Check(bool condition, string message)
     if (!condition) throw new Exception(message);
 }
 
+foreach (var invalid in new[] { "ws://localhost:8765/", "wss://example.com:8765/", "wss://127.0.0.1:8765/", "wss://localhost:0/", "wss://localhost:65536/", "wss://user@localhost:8765/", "wss://localhost:8765/path", "wss://localhost:8765/?x=1", "wss://localhost:8765/#fragment" })
+    Check(!ThalesBridgeInstaller.EndpointSettings.TryGetLocalPort(invalid, out _), $"Accepted invalid endpoint: {invalid}");
+Check(ThalesBridgeInstaller.EndpointSettings.TryGetLocalPort(" wss://localhost:9000/ ", out var editedPort) && editedPort == 9000, "Valid endpoint rejected");
+Console.WriteLine("PASS endpoint validation rejects insecure, remote and malformed endpoints");
+
 // Greeting, result and status must arrive in order, without concurrent sends.
 using (var socket = new ProbeSocket())
 using (var client = new WebSocketClient(socket))

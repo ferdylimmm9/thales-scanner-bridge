@@ -318,6 +318,7 @@ internal sealed partial class InstallerForm : Form
                 using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 connectTimeout.CancelAfter(TimeSpan.FromSeconds(5));
                 await socket.ConnectAsync(new Uri($"wss://localhost:{bridgePort}/"), connectTimeout.Token);
+                cancellationToken.ThrowIfCancellationRequested();
                 handshake.Stop();
                 connectionsOpened++;
                 AppendLog($"TLS/WebSocket handshake: {handshake.ElapsedMilliseconds} ms; certificate validation passed.");
@@ -331,6 +332,7 @@ internal sealed partial class InstallerForm : Form
                     var message = await ReceiveMessageAsync(socket, cancellationToken);
                     if (message is null)
                         throw new WebSocketException("The bridge closed the connection.");
+                    cancellationToken.ThrowIfCancellationRequested();
                     framesReceived++;
                     SetConnectionLabel(connectionDetails, $"Last frame: {DateTime.Now:T} | Frames: {framesReceived} | Attempts: {connectionAttempts} | Connections: {connectionsOpened}", Color.DimGray);
                     ProcessBridgeMessage(message);
@@ -471,6 +473,7 @@ internal sealed partial class InstallerForm : Form
         }
         label.Text = text;
         label.ForeColor = color;
+        UpdateManagerIndicator(label, color);
     }
 
     private void SetActivity(string text, Color color)
