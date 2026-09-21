@@ -18,6 +18,7 @@
   <ItemGroup>
     <Compile Include="../Installer/Program.cs" Link="Program.cs" />
     <Compile Include="../Installer/EndpointSettings.cs" Link="EndpointSettings.cs" />
+    <Compile Include="../Installer/CaptureControls.cs" Link="CaptureControls.cs" />
     <Compile Include="../Installer/ManagerView.cs" Link="ManagerView.cs" />
   </ItemGroup>
 </Project>

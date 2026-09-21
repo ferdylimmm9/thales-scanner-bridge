@@ -12,6 +12,7 @@ public sealed class WebSocketHub : IAsyncDisposable
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
+    public Func<string, Task<ScannerMessage>>? CommandReceived { get; set; }
     private readonly HttpListener _listener = new();
     private readonly Dictionary<Guid, WebSocketClient> _clients = new();
     private readonly HashSet<Task> _handlers = new();
@@ -19,7 +20,7 @@ public sealed class WebSocketHub : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly int _port;
     private Task? _acceptTask;
-    private byte[] _lastStatus = Serialize(ScannerMessage.StatusMsg("idle"));
+    private byte[] _lastStatus = Serialize(ScannerMessage.StatusMsg("idle", "automatic"));
 
     public WebSocketHub(int port)
     {
@@ -75,7 +76,11 @@ public sealed class WebSocketHub : IAsyncDisposable
         {
             using var abortHandshake = _cts.Token.Register(() => { try { ctx.Response.Abort(); } catch { } });
             var ws = await ctx.AcceptWebSocketAsync(null, 4096, TimeSpan.FromSeconds(20));
-            client = new WebSocketClient(ws.WebSocket);
+            client = new WebSocketClient(ws.WebSocket, async json =>
+            {
+                var handler = CommandReceived;
+                if (handler != null) client!.Enqueue(Serialize(await handler(json)));
+            });
             lock (_gate)
             {
                 if (_cts.IsCancellationRequested) return;

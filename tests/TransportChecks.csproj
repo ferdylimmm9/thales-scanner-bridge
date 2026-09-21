@@ -6,5 +6,7 @@
   <ItemGroup>
     <Compile Include="../Installer/EndpointSettings.cs" Link="EndpointSettings.cs" />
     <Compile Include="../ThalesBridge/WebSocketClient.cs" Link="WebSocketClient.cs" />
+    <Compile Include="../ThalesBridge/CaptureCoordinator.cs" Link="CaptureCoordinator.cs" />
+    <Compile Include="../ThalesBridge/ScannerCommand.cs" Link="ScannerCommand.cs" />
   </ItemGroup>
 </Project>

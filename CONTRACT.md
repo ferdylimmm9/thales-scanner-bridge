@@ -4,7 +4,7 @@
 bridge. You do not need this repository's code, the Thales SDK, or C# knowledge —
 everything a client needs is on this page.
 
-**Status:** v1, stable. Verified against a QS2000 reader with real passports (2026-07-14).
+**Status:** v1 with an additive capture-control extension. Original automatic scanning was verified against a QS2000 reader with real passports (2026-07-14). Manual controls use SDK 3.9.2.49 APIs and still require Windows/hardware acceptance testing.
 
 ```
 [Thales reader] --USB--> [ThalesBridge.exe on the kiosk PC] --wss://localhost:8765--> [your web app]
@@ -17,23 +17,22 @@ everything a client needs is on this page.
 | Protocol | WebSocket (RFC 6455), text frames only |
 | URL | `wss://localhost:<port>/` — default port **8765** (bridge CLI arg 1 overrides) |
 | Reachability | **localhost only** by design. Your app must run in a browser on the same PC as the scanner. |
-| Direction | **Server → client only.** The bridge accepts no commands in v1; anything the client sends is ignored. |
-| Concurrency | Multiple clients may connect at once; every frame is broadcast to all of them. |
+| Direction | Server events plus client `set_capture_mode` and `capture` commands. |
+| Concurrency | Multiple clients may connect at once; status, result and error events are broadcast; command acknowledgements return only to the requesting client. |
 | On connect | The bridge immediately sends the current `status` frame, so a new client knows the reader phase without waiting. |
 
-The reader auto-triggers: when a document lands on the glass the bridge starts
-reading and pushes frames. There is no "start scan" call.
+Automatic mode is the default after bridge startup. Manual mode disables placement-triggered reading and uses an explicit Capture action. Mode is shared across clients and retained during USB reconnects within the same bridge process.
 
 ## 2. Framing
 
 Every WebSocket text frame is **exactly one JSON object** with a `type`
-discriminator: `"status"`, `"result"`, or `"error"`. Unknown `type` values must be
+discriminator: `"status"`, `"result"`, `"error"`, or `"command_result"`. Unknown `type` values must be
 ignored by clients (forward compatibility). JSON field names are camelCase.
 
 ### 2.1 `status` — reader phase changed
 
 ```json
-{ "type": "status", "status": "waiting_for_document" }
+{ "type": "status", "status": "waiting_for_document", "captureMode": "automatic" }
 ```
 
 | `status` | Meaning | Suggested UI |
@@ -198,3 +197,35 @@ Use it to generate types in any language (e.g. `json-schema-to-typescript`,
 For context on what exists **upstream** of this contract (raw SDK fields, some of
 which are not forwarded today), see the annotated dummy-data example at
 [`bridge/contract/example-raw-sdk-data.json`](contract/example-raw-sdk-data.json).
+
+## Capture controls
+
+Clients enable capture controls only when status includes `captureMode` (`automatic` or `manual`). Older bridges remain compatible for automatic scanning. `waiting_for_document` means ready in either mode; manual mode waits for the operator's command.
+
+```json
+{"type":"set_capture_mode","requestId":"unique-1","mode":"manual"}
+{"type":"capture","requestId":"unique-2"}
+{"type":"set_capture_mode","requestId":"unique-3","mode":"automatic"}
+```
+
+Commands require a unique requestId (1–64 characters), valid JSON text, and at most 4096 UTF-8 bytes including all fragments. Binary/oversized input closes the connection. Invalid JSON/fields produce `INVALID_COMMAND` error events to the requester. Valid commands receive:
+
+```json
+{"type":"command_result","requestId":"unique-2","success":true}
+{"type":"command_result","requestId":"unique-3","success":false,"code":"SCANNER_BUSY","message":"Scanner command failed: SCANNER_BUSY."}
+```
+
+Success acknowledges SDK acceptance, not a completed capture. Wait for `result` or `error` and the next status. Never automatically retry a capture after timeout/disconnect: it may already have started. Commands are not deduplicated by requestId. Both UIs wait up to 10 seconds for acknowledgement, and the bridge rejects overlapping reads/mode switches. Native failures leave the prior confirmed mode in place. Missing completion callbacks leave the scanner busy; restart the bridge through the manager before another attempt.
+
+Manual mode uses `Reader.SetState(READER_DISABLED, false)` and `Reader.ForceRead()` in the high-level nonblocking SDK. Automatic uses `READER_ENABLED` with forceRedetect false: remove/reposition a document already on the glass to trigger another automatic scan. Scan accumulation resets on `START_OF_DOCUMENT_DATA`, allowing repeated manual captures without removing the document. Placement alone is not a capture in manual mode. SDK calls run through one queue, outside SDK callback threads.
+
+### Windows hardware acceptance
+
+1. Start bridge and both UIs; verify Automatic and ready state.
+2. Place a document; verify exactly one result and return to ready.
+3. Select Manual in either UI; verify both update. Remove/reinsert the document; verify no automatic read.
+4. Click Capture now; verify one result. Repeat without removing the document; verify fresh data.
+5. During a read, try another client command; verify busy rejection and no overlapping read.
+6. Capture with empty glass; verify SDK error/incomplete read and recovery. If completion never arrives, restart through the manager.
+7. Unplug/replug USB in Manual; verify the selected mode is restored. Restart bridge; verify Automatic default.
+8. Disconnect a client during a command; verify reconnect updates mode without replaying the capture.

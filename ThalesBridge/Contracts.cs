@@ -48,14 +48,19 @@ public sealed class ChipData
 public sealed class ScannerMessage
 {
     [JsonPropertyName("type")]
-    public required string Type { get; init; } // "status" | "result" | "error"
+    public required string Type { get; init; } // "status" | "result" | "error" | "command_result"
 
+    public string? CaptureMode { get; init; } // status: automatic | manual
+    public string? RequestId { get; init; } // command_result
+    public bool? Success { get; init; } // command_result
     public string? Status { get; init; }       // for type=status: idle | waiting_for_document | reading
     public DocumentScanResult? Data { get; init; } // for type=result
     public string? Code { get; init; }         // for type=error
     public string? Message { get; init; }      // for type=error
 
-    public static ScannerMessage StatusMsg(string status) => new() { Type = "status", Status = status };
+    public static ScannerMessage StatusMsg(string status, string? captureMode = null) => new() { Type = "status", Status = status, CaptureMode = captureMode };
+    public static ScannerMessage CommandResult(string requestId, string? error) => new()
+    { Type = "command_result", RequestId = requestId, Success = error == null, Code = error, Message = error == null ? null : $"Scanner command failed: {error}." };
     public static ScannerMessage Result(DocumentScanResult data) => new() { Type = "result", Data = data };
     public static ScannerMessage Error(string code, string message) =>
         new() { Type = "error", Code = code, Message = message };

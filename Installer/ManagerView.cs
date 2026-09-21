@@ -35,8 +35,8 @@ internal sealed partial class InstallerForm
         port.Minimum = 1;
         port.Maximum = 65535;
         port.Value = Math.Clamp(configuredPort, 1, 65535);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(26), ColumnCount = 1, RowCount = 12 };
-        for (int i = 0; i < 11; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(26), ColumnCount = 1, RowCount = 13 };
+        for (int i = 0; i < 12; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var title = new Label { Text = "Thales Scanner Bridge", Font = new Font("Segoe UI", 21F), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
         var description = new Label { Text = "Manage your local connection and scanner. Closing this window keeps the bridge running.", AutoSize = true, Margin = new Padding(0, 0, 0, 22) };
@@ -116,14 +116,15 @@ internal sealed partial class InstallerForm
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "Could not save report"); }
         };
         managerActions.Controls.Add(saveReport);
-        layout.Controls.Add(managerActions, 0, 10);
+        layout.Controls.Add(CreateCaptureControls(), 0, 10);
+        layout.Controls.Add(managerActions, 0, 11);
         log.Dock = DockStyle.Fill;
         log.ReadOnly = true;
         log.BackColor = Color.White;
         log.ForeColor = Color.FromArgb(55, 70, 90);
         log.BorderStyle = BorderStyle.FixedSingle;
         log.Font = new Font("Consolas", 9F);
-        layout.Controls.Add(log, 0, 11);
+        layout.Controls.Add(log, 0, 12);
         Controls.Add(layout);
         void FitText()
         {
@@ -156,6 +157,7 @@ internal sealed partial class InstallerForm
     private void SetManagerBusy(bool busy)
     {
         managementBusy = busy;
+        UpdateCaptureControls();
         if (managerActions != null) managerActions.Enabled = !busy;
         if (applyEndpoint != null) applyEndpoint.Enabled = !busy;
         endpointEditor.Enabled = !busy;

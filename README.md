@@ -339,8 +339,9 @@ contract version it targets.
 { "type": "error", "code": "READ_INCOMPLETE", "message": "..." }
 ```
 
-The client sends **no** commands in v1 — the reader auto-triggers when a document is
-placed on the glass.
+Automatic capture starts when a document is placed on the glass. Both the desktop manager and Player360 capture dialog also offer **Manual** mode with a **Capture now** button. Mode changes apply to every connected client. Automatic is the default after a bridge restart; USB reconnects retain the current mode.
+
+Manual mode disables placement-triggered reads and calls the Thales SDK's `ForceRead()` API on request. Repeated captures do not require removing the document. Controls are disabled while reading or awaiting a command acknowledgement. See [capture commands and hardware acceptance checks](CONTRACT.md#capture-controls). The manual extension is compiled and tested with simulated SDK state; Windows/scanner acceptance remains required.
 
 ## How the WebSocket is exposed
 

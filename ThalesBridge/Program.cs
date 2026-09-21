@@ -52,7 +52,7 @@ Task Send(ScannerMessage message)
 scanner.StatusChanged += status =>
 {
     Console.WriteLine($"[bridge] status: {status}");
-    _ = Send(ScannerMessage.StatusMsg(status));
+    _ = Send(ScannerMessage.StatusMsg(status, scanner.CaptureMode));
 };
 scanner.ScanCompleted += result =>
 {
@@ -63,6 +63,24 @@ scanner.ScanError += (code, message) =>
 {
     Console.WriteLine($"[bridge] error {code}: {message}");
     _ = Send(ScannerMessage.Error(code, message));
+};
+
+hub.CommandReceived = async json =>
+{
+    ScannerCommand command;
+    try { command = ScannerCommand.Parse(json); }
+    catch (Exception ex) when (ex is System.Text.Json.JsonException or FormatException)
+    { return ScannerMessage.Error("INVALID_COMMAND", ex.Message); }
+    try
+    {
+        var error = await scanner.ExecuteCommandAsync(command.Type, command.Mode);
+        return ScannerMessage.CommandResult(command.RequestId, error);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[bridge] command failed: {ex.Message}");
+        return ScannerMessage.CommandResult(command.RequestId, "SDK_COMMAND_FAILED");
+    }
 };
 
 if (debugLog != null) Console.WriteLine($"[bridge] SDK debug log -> {debugLog}");

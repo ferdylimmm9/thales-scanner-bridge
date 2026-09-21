@@ -296,6 +296,7 @@ internal sealed partial class InstallerForm : Form
 
     private void StopMonitor()
     {
+        ResetCaptureConnection();
         monitorCancellation?.Cancel();
         monitorCancellation?.Dispose();
         monitorCancellation = null;
@@ -319,6 +320,7 @@ internal sealed partial class InstallerForm : Form
                 connectTimeout.CancelAfter(TimeSpan.FromSeconds(5));
                 await socket.ConnectAsync(new Uri($"wss://localhost:{bridgePort}/"), connectTimeout.Token);
                 cancellationToken.ThrowIfCancellationRequested();
+                commandSocket = socket;
                 handshake.Stop();
                 connectionsOpened++;
                 AppendLog($"TLS/WebSocket handshake: {handshake.ElapsedMilliseconds} ms; certificate validation passed.");
@@ -351,6 +353,8 @@ internal sealed partial class InstallerForm : Form
                 SetConnectionLabel(scannerConnection, "Scanner: unavailable until bridge starts", Color.DimGray);
                 SetActivity("Activity: waiting for installation or bridge startup", Color.DimGray);
             }
+
+            finally { if (commandSocket == socket) ResetCaptureConnection(); }
 
             try
             {
@@ -401,7 +405,11 @@ internal sealed partial class InstallerForm : Form
 
             switch (typeElement.GetString())
             {
+                case "command_result":
+                    ProcessCaptureMessage(root);
+                    break;
                 case "status":
+                    ProcessCaptureMessage(root);
                     var scannerStatus = root.TryGetProperty("status", out var statusElement)
                         ? statusElement.GetString()
                         : null;

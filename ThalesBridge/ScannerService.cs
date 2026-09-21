@@ -11,7 +11,7 @@ namespace ThalesBridge;
 ///
 /// Lifecycle (from the SDK's HLNonBlockingExample.NET5 sample):
 ///   Reader.Initialise(dataCb, eventCb, ...)  -> registers callbacks
-///   EventCode.DOC_ON_WINDOW                  -> document placed  (start accumulating)
+///   EventCode.START_OF_DOCUMENT_DATA         -> read starts (reset accumulator)
 ///   DataCallback fires per DataType          -> MRZ / images / chip
 ///   EventCode.END_OF_DOCUMENT_DATA           -> read complete    (emit result)
 ///
@@ -27,6 +27,34 @@ public sealed class ScannerService : IDisposable
     public event Action<DocumentScanResult>? ScanCompleted;
     // Raised on reader errors.
     public event Action<string, string>? ScanError; // (code, message)
+
+    private readonly SdkWorkQueue _sdk = new();
+    private readonly CaptureCoordinator _capture;
+    private readonly object _scanGate = new();
+    private volatile bool _disposed;
+    public string CaptureMode => _capture.Snapshot.Mode;
+    public string Phase => _capture.Snapshot.Phase;
+
+    public ScannerService()
+    {
+        _capture = new CaptureCoordinator(
+            automatic => SdkError(Reader.SetState(automatic ? ReaderState.READER_ENABLED : ReaderState.READER_DISABLED, false)),
+            () => SdkError(Reader.ForceRead()));
+        _capture.Changed += () => StatusChanged?.Invoke(Phase);
+    }
+    private static string? SdkError(ErrorCode code) => code == ErrorCode.NO_ERROR_OCCURRED ? null : code.ToString();
+    public Task<string?> ExecuteCommandAsync(string type, string? mode) => _sdk.RunAsync(() =>
+    {
+        if (_disposed) return "BRIDGE_SHUTTING_DOWN";
+        return type == "capture" ? _capture.Capture() : _capture.SetMode(mode ?? "");
+    });
+    private void EnableConfiguredMode()
+    {
+        if (_disposed) return;
+        var error = _capture.ApplyCurrentMode();
+        _capture.SetReady(error == null);
+        if (error != null) ScanError?.Invoke(error, "Could not configure scanner capture mode.");
+    }
 
     // Keep delegates in fields so the GC can't collect them while native code holds them.
     private DataDelegate? _dataCb;
@@ -65,11 +93,12 @@ public sealed class ScannerService : IDisposable
         _errorCb = OnError;
         _debugLogPath = debugLogPath;
 
-        TryInitialise(firstAttempt: true);
+        _sdk.RunAsync(() => { TryInitialise(firstAttempt: true); return true; }).GetAwaiter().GetResult();
     }
 
     private void TryInitialise(bool firstAttempt)
     {
+        if (_disposed) return;
         // Full SDK diagnostics to a writable file (level 5, all modules). Integration
         // debugging only — the log can contain document data.
         if (_debugLogPath != null && !_loggingEnabled)
@@ -95,9 +124,7 @@ public sealed class ScannerService : IDisposable
             _retryTimer = null;
             Console.WriteLine("[bridge] reader initialised.");
 
-            // Enable the reader so it starts watching the glass.
-            Reader.SetState(ReaderState.READER_ENABLED, false);
-            StatusChanged?.Invoke("waiting_for_document");
+            EnableConfiguredMode();
             return;
         }
 
@@ -117,7 +144,10 @@ public sealed class ScannerService : IDisposable
             // Native state must be torn down before the next Initialise attempt.
             try { Reader.Shutdown(); } catch { /* ignore */ }
             _retryTimer?.Dispose();
-            _retryTimer = new Timer(_ => TryInitialise(firstAttempt: false), null,
+            _retryTimer = new Timer(state =>
+            {
+                if (!_disposed) _ = RetryAsync();
+            }, null,
                 RetrySeconds * 1000, Timeout.Infinite);
             return;
         }
@@ -125,37 +155,58 @@ public sealed class ScannerService : IDisposable
         ScanError?.Invoke("INIT_FAILED", $"Reader.Initialise returned {result}");
     }
 
+    private async Task RetryAsync()
+    {
+        try { await _sdk.RunAsync(() => { TryInitialise(false); return true; }); }
+        catch (Exception ex) { if (!_disposed) ScanError?.Invoke("INIT_FAILED", ex.Message); }
+    }
+
     private void OnEvent(EventCode ev)
+    {
+        if (_disposed) return;
+        try { OnEventCore(ev); }
+        catch (Exception ex) { ScanError?.Invoke("EVENT_HANDLER_FAILED", ex.Message); }
+    }
+
+    private void OnEventCore(EventCode ev)
     {
         switch (ev)
         {
             case EventCode.SETTINGS_INITIALISED:
-                StatusChanged?.Invoke("waiting_for_document");
+            case EventCode.DOC_ON_WINDOW:
+                // Placement still occurs in manual mode; it is not a scan start.
                 break;
 
-            case EventCode.DOC_ON_WINDOW:
-                ResetAccumulator();
-                StatusChanged?.Invoke("reading");
+            case EventCode.START_OF_DOCUMENT_DATA:
+                lock (_scanGate) ResetAccumulator();
+                _capture.BeginRead();
                 break;
 
             case EventCode.END_OF_DOCUMENT_DATA:
-                EmitResult();
-                StatusChanged?.Invoke("waiting_for_document");
+                try { lock (_scanGate) EmitResult(); }
+                finally { _capture.EndRead(); }
                 break;
 
             // Hot plug/unplug while the bridge is running.
             case EventCode.READER_CONNECTED:
                 Console.WriteLine("[bridge] reader connected.");
-                Reader.SetState(ReaderState.READER_ENABLED, false);
-                StatusChanged?.Invoke("waiting_for_document");
+                _ = ReconnectAsync();
                 break;
 
             case EventCode.READER_DISCONNECTED:
+                _capture.SetReady(false);
+                lock (_scanGate) ResetAccumulator();
                 Console.WriteLine("[bridge] reader disconnected — check the USB connection.");
                 ScanError?.Invoke("READER_DISCONNECTED", "Scanner disconnected — check the USB connection.");
                 StatusChanged?.Invoke("idle");
                 break;
         }
+    }
+
+    private async Task ReconnectAsync()
+    {
+        try { await _sdk.RunAsync(() => { EnableConfiguredMode(); return true; }); }
+        catch (Exception ex) { if (!_disposed) ScanError?.Invoke("INIT_FAILED", ex.Message); }
     }
 
     private void OnData(DataType type, object data)
@@ -164,7 +215,8 @@ public sealed class ScannerService : IDisposable
 
         // A throw here propagates into the SDK's native thread and errors the whole
         // read (surfaces as UNKNOWN_ERROR_OCCURRED) — never let an exception escape.
-        try { OnDataCore(type, data); }
+        if (_disposed) return;
+        try { lock (_scanGate) OnDataCore(type, data); }
         catch (Exception ex)
         {
             Console.WriteLine($"[bridge] OnData({type}) failed: payload={data.GetType().FullName}: {ex}");
@@ -295,8 +347,11 @@ public sealed class ScannerService : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         _retryTimer?.Dispose();
-        try { Reader.Shutdown(); } catch { /* ignore */ }
+        _capture.SetReady(false);
+        try { _sdk.RunAsync(() => { Reader.Shutdown(); return true; }).GetAwaiter().GetResult(); }
+        finally { _sdk.Dispose(); }
     }
 }
 
