@@ -2,7 +2,7 @@
 
 ## Secure desktop release
 
-The bridge now uses **`wss://localhost:8765/`**. Update the frontend's
+The bridge defaults to **`wss://localhost:8765/`** and also supports explicit `ws://` configuration. Update the frontend's
 `NEXT_PUBLIC_THALES_BRIDGE_URL` to this URL and rebuild/redeploy that frontend.
 The frontend lives in a separate repository and is not updated by this installer.
 Do not use `127.0.0.1`: the certificate is issued for `localhost`.
@@ -20,7 +20,7 @@ The desktop manager opens after installation and provides:
 - Live WSS status, connection attempts, successful connections, received frame count and last frame time.
 - Thales reader status, completed scans, last scan time, and retained last error.
 - Start, Stop, Restart, Enable auto-start, and Diagnostics controls.
-- Editable local secure endpoint with validation, certificate binding updates, restart/handshake verification, and rollback on verification failure.
+- Editable local WS/WSS endpoint with validation, certificate binding updates, restart/handshake verification, and rollback on verification failure.
 - Soft status colors and a moving progress indicator while the reader is scanning.
 - Diagnostics for TLS trust/expiry/binding, port ownership, task execution, bridge version/process,
   SDK location/version, capture settings, and matching Windows device names.
@@ -427,3 +427,21 @@ The previous launcher/settings are restored if verification fails. Remote hosts,
 `ws://` URLs, custom paths, credentials, query strings, and fragments are rejected.
 Then change Player 360's scanner connection setting to the same URL. A browser setting
 does not reconfigure the Windows bridge, and a desktop change does not update browsers.
+
+
+### Switch between WS and WSS
+
+Install the updated `ThalesBridgeSetup.exe` first. In Scanner Manager, enter
+`ws://localhost:8765/` in **Bridge endpoint** and select **Apply endpoint**.
+The bridge restarts, verifies the connection, and saves the protocol for the next
+computer startup. If verification fails, setup attempts to restore the previous endpoint.
+Set the same URL in P360's scanner endpoint settings and save/reconnect.
+Use `wss://localhost:8765/` to switch back to TLS. WSS remains the default.
+
+WS requires no certificate and is unencrypted. Browser security policies may block
+WS connections from HTTPS pages; use WSS when required by your browser/site policy.
+Both protocols are restricted to localhost. Capture modes and scan data are unchanged.
+
+An administrator can also run `./setup.ps1 -ConfigureEndpoint -Port 8765 -Protocol ws`
+on Windows. For a new CLI install, add `-Protocol ws` to the setup command.
+Direct bridge launches accept `ThalesBridge.exe 8765 --ws`; omit `--ws` for WSS.

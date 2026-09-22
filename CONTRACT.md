@@ -15,7 +15,7 @@ everything a client needs is on this page.
 | Property | Value |
 | --- | --- |
 | Protocol | WebSocket (RFC 6455), text frames only |
-| URL | `wss://localhost:<port>/` — default port **8765** (bridge CLI arg 1 overrides) |
+| URL | `wss://localhost:<port>/` by default; explicit `ws://localhost:<port>/` supported. Default port **8765**. Match Scanner Manager configuration. |
 | Reachability | **localhost only** by design. Your app must run in a browser on the same PC as the scanner. |
 | Direction | Server events plus client `set_capture_mode` and `capture` commands. |
 | Concurrency | Multiple clients may connect at once; status, result and error events are broadcast; command acknowledgements return only to the requesting client. |
@@ -85,9 +85,11 @@ ignored by clients (forward compatibility). JSON field names are camelCase.
 | `issuingCountry` | string | ISO alpha-3; falls back to `nationality` when the MRZ issuing state is absent. |
 | `expiryDate` | string | `yyyy-MM-dd` or `""`. 2-digit years windowed future-biased (a doc expiring "31" = 2031). |
 
-**Guarantee:** a `result` is only emitted when at least one of `lastName` /
-`documentNumber` is non-empty. Anything less is reported as a `READ_INCOMPLETE` error
-instead. Every other field may legitimately be empty — never assume presence.
+**Guarantee:** a `result` is emitted when `lastName` or `documentNumber` is non-empty,
+or a front/back document image was captured. IDs without MRZ therefore produce image-only
+results with empty MRZ fields for operator review. A portrait alone is not a document image.
+When neither usable MRZ data nor a document image is available, the bridge reports
+`READ_INCOMPLETE`. Do not assume any individual field is present.
 
 #### `images` fields
 
@@ -118,7 +120,7 @@ ISO 8601 UTC timestamp assigned by the bridge when the read completed.
 ### 2.3 `error` — read or reader failure
 
 ```json
-{ "type": "error", "code": "READ_INCOMPLETE", "message": "Document read produced no usable MRZ data." }
+{ "type": "error", "code": "READ_INCOMPLETE", "message": "Document read produced neither usable MRZ data nor a document image. Reposition the document and scan again." }
 ```
 
 | `code` | Origin | Client action |

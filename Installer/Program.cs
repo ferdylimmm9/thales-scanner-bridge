@@ -318,13 +318,15 @@ internal sealed partial class InstallerForm : Form
                 var handshake = Stopwatch.StartNew();
                 using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 connectTimeout.CancelAfter(TimeSpan.FromSeconds(5));
-                await socket.ConnectAsync(new Uri($"wss://localhost:{bridgePort}/"), connectTimeout.Token);
+                await socket.ConnectAsync(new Uri($"{endpointScheme}://localhost:{bridgePort}/"), connectTimeout.Token);
                 cancellationToken.ThrowIfCancellationRequested();
                 commandSocket = socket;
                 handshake.Stop();
                 connectionsOpened++;
-                AppendLog($"TLS/WebSocket handshake: {handshake.ElapsedMilliseconds} ms; certificate validation passed.");
-                AppendLog($"{DateTime.Now:T} WebSocket connected: wss://localhost:{bridgePort}/");
+                AppendLog(endpointScheme == "wss"
+                    ? $"TLS/WebSocket handshake: {handshake.ElapsedMilliseconds} ms; certificate validation passed."
+                    : $"WebSocket handshake: {handshake.ElapsedMilliseconds} ms; WS without TLS.");
+                AppendLog($"{DateTime.Now:T} WebSocket connected: {endpointScheme}://localhost:{bridgePort}/");
                 SetConnectionLabel(connectionDetails, $"Connected at {DateTime.Now:T} | Attempts: {connectionAttempts} | Successful connections: {connectionsOpened}", Color.DimGray);
                 SetConnectionLabel(bridgeConnection, $"Bridge: connected on port {bridgePort}", Color.DarkGreen);
                 SetActivity("Activity: bridge connected; waiting for scanner status", Color.DimGray);

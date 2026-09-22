@@ -271,10 +271,10 @@ public sealed class ScannerService : IDisposable
 
     private void EmitResult()
     {
-        // Require at least a name or document number before emitting.
-        if (string.IsNullOrWhiteSpace(_mrz.LastName) && string.IsNullOrWhiteSpace(_mrz.DocumentNumber))
+        // IDs without MRZ can still provide usable document images for operator review.
+        if (!ScanValidation.HasUsableContent(_mrz, _images))
         {
-            ScanError?.Invoke("READ_INCOMPLETE", "Document read produced no usable MRZ data.");
+            ScanError?.Invoke("READ_INCOMPLETE", "Document read produced neither usable MRZ data nor a document image. Reposition the document and scan again.");
             return;
         }
 

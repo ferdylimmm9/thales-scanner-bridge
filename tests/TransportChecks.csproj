@@ -8,5 +8,7 @@
     <Compile Include="../ThalesBridge/WebSocketClient.cs" Link="WebSocketClient.cs" />
     <Compile Include="../ThalesBridge/CaptureCoordinator.cs" Link="CaptureCoordinator.cs" />
     <Compile Include="../ThalesBridge/ScannerCommand.cs" Link="ScannerCommand.cs" />
+    <Compile Include="../ThalesBridge/Contracts.cs" Link="Contracts.cs" />
+    <Compile Include="../ThalesBridge/ScanValidation.cs" Link="ScanValidation.cs" />
   </ItemGroup>
 </Project>

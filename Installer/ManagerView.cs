@@ -6,6 +6,7 @@ namespace ThalesBridgeInstaller;
 internal sealed partial class InstallerForm
 {
     private bool managementBusy;
+    private string endpointScheme = "wss";
 
     private readonly TextBox endpointEditor = new();
     private readonly Label endpointFeedback = new();
@@ -30,6 +31,7 @@ internal sealed partial class InstallerForm
         {
             using var config = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "bridge-settings.json")));
             configuredPort = config.RootElement.GetProperty("port").GetInt32();
+            if (config.RootElement.TryGetProperty("protocol", out var protocol) && protocol.GetString() == "ws") endpointScheme = "ws";
         }
         catch (Exception ex) { AppendLog("Using default port: " + ex.Message); }
         port.Minimum = 1;
@@ -46,16 +48,16 @@ internal sealed partial class InstallerForm
         endpointRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         endpointRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         endpointRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        endpointRow.Controls.Add(new Label { Text = "Secure endpoint", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 16, 0) }, 0, 0);
-        endpointEditor.Text = $"wss://localhost:{port.Value}/";
+        endpointRow.Controls.Add(new Label { Text = "Bridge endpoint", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 16, 0) }, 0, 0);
+        endpointEditor.Text = $"{endpointScheme}://localhost:{port.Value}/";
         endpointEditor.Dock = DockStyle.Fill;
-        endpointEditor.AccessibleName = "Local secure WebSocket endpoint";
+        endpointEditor.AccessibleName = "Local WebSocket endpoint";
         applyEndpoint = MakeManagerButton("Apply endpoint");
         applyEndpoint.Click += async (_, _) => await ApplyEndpointAsync();
         endpointRow.Controls.Add(endpointEditor, 1, 0);
         endpointRow.Controls.Add(applyEndpoint, 2, 0);
         layout.Controls.Add(endpointRow, 0, 2);
-        endpointFeedback.Text = "Use wss://localhost:PORT/. Applying restarts the bridge; update your frontend URL too.";
+        endpointFeedback.Text = "Use ws://localhost:PORT/ or wss://localhost:PORT/. WSS uses TLS; WS is unencrypted. Match the URL in P360.";
         endpointFeedback.AutoSize = true;
         endpointFeedback.Margin = new Padding(0, 8, 0, 20);
         endpointFeedback.ForeColor = Color.FromArgb(89, 104, 124);
@@ -112,7 +114,7 @@ internal sealed partial class InstallerForm
         {
             using var dialog = new SaveFileDialog { Filter = "Text report (*.txt)|*.txt", FileName = $"ThalesBridge-{DateTime.Now:yyyyMMdd-HHmmss}.txt" };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            try { File.WriteAllText(dialog.FileName, $"wss://localhost:{port.Value}/\n{bridgeConnection.Text}\n{scannerConnection.Text}\n{connectionDetails.Text}\n{scanDetails.Text}\n{lastError.Text}\n\n{log.Text}"); }
+            try { File.WriteAllText(dialog.FileName, $"{endpointScheme}://localhost:{port.Value}/\n{bridgeConnection.Text}\n{scannerConnection.Text}\n{connectionDetails.Text}\n{scanDetails.Text}\n{lastError.Text}\n\n{log.Text}"); }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "Could not save report"); }
         };
         managerActions.Controls.Add(saveReport);
@@ -183,20 +185,20 @@ internal sealed partial class InstallerForm
 
     private async Task ApplyEndpointAsync()
     {
-        if (!EndpointSettings.TryGetLocalPort(endpointEditor.Text, out var newPort))
+        if (!EndpointSettings.TryGetLocalEndpoint(endpointEditor.Text, out var newPort, out var newScheme))
         {
-            endpointFeedback.Text = "Enter wss://localhost:PORT/ with a port from 1 to 65535. Remote hosts and paths are not supported.";
+            endpointFeedback.Text = "Enter ws://localhost:PORT/ or wss://localhost:PORT/ with a port from 1 to 65535. Remote hosts and paths are not supported.";
             endpointFeedback.ForeColor = Color.FromArgb(143, 68, 30);
             return;
         }
-        if (newPort == (int)port.Value)
+        if (newPort == (int)port.Value && newScheme == endpointScheme)
         {
-            endpointEditor.Text = $"wss://localhost:{port.Value}/";
+            endpointEditor.Text = $"{endpointScheme}://localhost:{port.Value}/";
             endpointFeedback.Text = "This endpoint is already active.";
             return;
         }
         SetManagerBusy(true);
-        endpointFeedback.Text = "Applying endpoint and checking the secure connection…";
+        endpointFeedback.Text = "Applying endpoint and checking the connection…";
         endpointFeedback.ForeColor = Color.FromArgb(40, 88, 151);
         var previousMonitor = monitorTask;
         StopMonitor();
@@ -209,7 +211,7 @@ internal sealed partial class InstallerForm
                 RedirectStandardOutput = true, RedirectStandardError = true
             };
             foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                Path.Combine(AppContext.BaseDirectory, "setup.ps1"), "-ConfigureEndpoint", "-Port", newPort.ToString() })
+                Path.Combine(AppContext.BaseDirectory, "setup.ps1"), "-ConfigureEndpoint", "-Port", newPort.ToString(), "-Protocol", newScheme })
                 start.ArgumentList.Add(argument);
             using var process = Process.Start(start) ?? throw new InvalidOperationException("Cannot start endpoint configuration.");
             var output = process.StandardOutput.ReadToEndAsync();
@@ -219,9 +221,10 @@ internal sealed partial class InstallerForm
             var errors = (await error).Trim();
             if (errors.Length > 0) AppendLog(errors);
             if (process.ExitCode != 0) throw new InvalidOperationException("Endpoint update failed. See the diagnostic log; the previous endpoint is retained unless recovery also failed.");
+            endpointScheme = newScheme;
             port.Value = newPort;
-            endpointEditor.Text = $"wss://localhost:{newPort}/";
-            endpointFeedback.Text = $"Saved. Update your frontend URL to wss://localhost:{newPort}/ and reconnect.";
+            endpointEditor.Text = $"{endpointScheme}://localhost:{newPort}/";
+            endpointFeedback.Text = $"Saved. Update your frontend URL to {endpointScheme}://localhost:{newPort}/ and reconnect.";
             endpointFeedback.ForeColor = Color.FromArgb(29, 104, 72);
         }
         catch (Exception ex)
@@ -247,7 +250,7 @@ internal sealed partial class InstallerForm
             "Stop" => "Stop-ScheduledTask -TaskName ThalesBridge; Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force",
             "Restart" => "Stop-ScheduledTask -TaskName ThalesBridge; Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1; Start-ScheduledTask -TaskName ThalesBridge",
             "Enable" => "Enable-ScheduledTask -TaskName ThalesBridge | Out-Null; Set-ScheduledTask -TaskName ThalesBridge -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) | Out-Null; Start-ScheduledTask -TaskName ThalesBridge",
-            "Doctor" => "& (Join-Path $env:ProgramFiles 'ThalesBridge\\setup.ps1') -Doctor -Port " + (int)port.Value,
+            "Doctor" => "& (Join-Path $env:ProgramFiles 'ThalesBridge\\setup.ps1') -Doctor -Port " + (int)port.Value + " -Protocol " + endpointScheme,
             _ => throw new ArgumentOutOfRangeException(nameof(command))
         };
         var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"))

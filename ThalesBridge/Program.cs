@@ -1,7 +1,7 @@
 using System.Reflection;
 using ThalesBridge;
 
-// Usage: ThalesBridge.exe [port] [--verbose] [--debug-log <file>] [--version]
+// Usage: ThalesBridge.exe [port] [--ws] [--verbose] [--debug-log <file>] [--version]
 //   port      must match NEXT_PUBLIC_THALES_BRIDGE_URL in the frontend (default 8765)
 //   --verbose log every outgoing JSON frame (contract tracking during integration).
 //             Result frames contain patron PII — use during integration/testing only.
@@ -17,16 +17,18 @@ if (args.Contains("--version"))
     return 0;
 }
 
+bool secure = !args.Contains("--ws");
+string scheme = secure ? "wss" : "ws";
 bool verbose = args.Contains("--verbose");
 int port = args.FirstOrDefault(a => int.TryParse(a, out _)) is { } pArg ? int.Parse(pArg) : 8765;
 string? debugLog = null;
 if (Array.IndexOf(args, "--debug-log") is var dbgIdx and >= 0 && dbgIdx + 1 < args.Length)
     debugLog = args[dbgIdx + 1];
 
-Console.WriteLine($"[bridge] Thales Document Reader bridge starting on wss://localhost:{port}"
+Console.WriteLine($"[bridge] Thales Document Reader bridge starting on {scheme}://localhost:{port}"
     + (verbose ? " (verbose: logging contract frames)" : ""));
 
-await using var hub = new WebSocketHub(port);
+await using var hub = new WebSocketHub(port, secure);
 
 try
 {

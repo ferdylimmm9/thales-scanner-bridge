@@ -7,6 +7,16 @@ static void Check(bool condition, string message)
     if (!condition) throw new Exception(message);
 }
 
+// Image-only IDs must reach the frontend even when the document has no MRZ.
+Check(ScanValidation.HasUsableContent(new MrzData(), new ScanImages { Front = "data:image/jpeg;base64,front" }), "Front image without MRZ rejected");
+Check(ScanValidation.HasUsableContent(new MrzData(), new ScanImages { Back = "data:image/jpeg;base64,back" }), "Back image without MRZ rejected");
+Check(ScanValidation.HasUsableContent(new MrzData { LastName = "TEST" }, new ScanImages()), "Existing name-based scan rejected");
+Check(ScanValidation.HasUsableContent(new MrzData { DocumentNumber = "123" }, new ScanImages()), "Existing document-number scan rejected");
+Check(!ScanValidation.HasUsableContent(new MrzData(), new ScanImages()), "Empty scan accepted");
+Check(!ScanValidation.HasUsableContent(new MrzData { LastName = " " }, new ScanImages { Front = " " }), "Whitespace content accepted");
+Check(!ScanValidation.HasUsableContent(new MrzData(), new ScanImages { Portrait = "data:image/jpeg;base64,portrait" }), "Portrait-only result accepted as document");
+Console.WriteLine("PASS image-only documents accepted; empty and portrait-only scans rejected");
+
 // Native-free capture state checks exercise callback ordering and failures.
 bool automatic = true;
 int captures = 0;
@@ -39,10 +49,12 @@ foreach (var invalidCommand in new[] { "{}", "[]", """{"type":"capture"}""", """
 }
 Console.WriteLine("PASS capture modes, repeated/manual capture, busy guard, native failures and command validation");
 
-foreach (var invalid in new[] { "ws://localhost:8765/", "wss://example.com:8765/", "wss://127.0.0.1:8765/", "wss://localhost:0/", "wss://localhost:65536/", "wss://user@localhost:8765/", "wss://localhost:8765/path", "wss://localhost:8765/?x=1", "wss://localhost:8765/#fragment" })
+foreach (var invalid in new[] { "https://localhost:8765/", "ws://example.com:8765/", "wss://example.com:8765/", "wss://127.0.0.1:8765/", "wss://localhost:0/", "wss://localhost:65536/", "wss://user@localhost:8765/", "wss://localhost:8765/path", "wss://localhost:8765/?x=1", "wss://localhost:8765/#fragment" })
     Check(!ThalesBridgeInstaller.EndpointSettings.TryGetLocalPort(invalid, out _), $"Accepted invalid endpoint: {invalid}");
 Check(ThalesBridgeInstaller.EndpointSettings.TryGetLocalPort(" wss://localhost:9000/ ", out var editedPort) && editedPort == 9000, "Valid endpoint rejected");
-Console.WriteLine("PASS endpoint validation rejects insecure, remote and malformed endpoints");
+Check(ThalesBridgeInstaller.EndpointSettings.TryGetLocalEndpoint("ws://localhost:8765/", out var wsPort, out var wsScheme) && wsPort == 8765 && wsScheme == "ws", "WS endpoint rejected");
+Check(ThalesBridgeInstaller.EndpointSettings.TryGetLocalEndpoint("wss://localhost:8765/", out _, out var wssScheme) && wssScheme == "wss", "WSS protocol lost");
+Console.WriteLine("PASS WS/WSS endpoint parsing rejects remote and malformed endpoints");
 
 // Greeting, result and status must arrive in order, without concurrent sends.
 using (var socket = new ProbeSocket())

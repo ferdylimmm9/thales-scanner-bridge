@@ -40,6 +40,8 @@ param(
   [string]$SdkMsi = '',
   [ValidateRange(1, 65535)]
   [int]$Port = 8765,
+  [ValidateSet('ws', 'wss')]
+  [string]$Protocol = 'wss',
   [switch]$SkipUvIrPatch,
   [switch]$LogonStart,
   [switch]$Doctor,
@@ -50,6 +52,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $InstallDir = 'C:\Program Files\ThalesBridge'
 $TaskName = 'ThalesBridge'
+if ($Doctor -and -not $PSBoundParameters.ContainsKey('Protocol')) {
+  $savedPath = Join-Path $InstallDir 'bridge-settings.json'
+  if (Test-Path $savedPath) {
+    $saved = Get-Content $savedPath -Raw | ConvertFrom-Json
+    if ($saved.protocol -eq 'ws') { $Protocol = 'ws' }
+    if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = [int]$saved.port }
+  }
+}
+$HttpProtocol = if ($Protocol -eq 'ws') { 'http' } else { 'https' }
 
 function Fail($msg) { Write-Host "FAILED: $msg" -ForegroundColor Red; exit 1 }
 function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
@@ -63,16 +74,30 @@ function Test-BridgeWebSocket {
   $timeout = New-Object System.Threading.CancellationTokenSource
   $timeout.CancelAfter(3000)
   try {
-    $socket.ConnectAsync([Uri]"wss://localhost:$Port/", $timeout.Token).GetAwaiter().GetResult()
+    $socket.ConnectAsync([Uri]"${Protocol}://localhost:$Port/", $timeout.Token).GetAwaiter().GetResult()
     return $true
   } catch {
-    Write-Verbose "WSS probe failed: $($_.Exception.Message)"
+    Write-Verbose "WebSocket probe failed: $($_.Exception.Message)"
     return $false
   } finally {
     $socket.Abort()
     $socket.Dispose()
     $timeout.Dispose()
   }
+}
+
+function Set-BridgeEndpoint {
+  param([int]$Port, [string]$Protocol)
+  if ($Protocol -eq 'wss') { Set-BridgeTls -Port $Port; return }
+  cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
+  netsh http add urlacl url="http://localhost:$Port/" user='BUILTIN\Users' | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Could not reserve the HTTP endpoint.' }
+}
+
+function Remove-BridgeEndpoint {
+  param([int]$Port, [string]$Protocol)
+  if ($Protocol -eq 'wss') { Remove-BridgeTls -Port $Port; return }
+  cmd /c "netsh http delete urlacl url=http://localhost:$Port/ >nul 2>&1"
 }
 
 function Set-BridgeTls {
@@ -200,16 +225,17 @@ if ($Doctor) {
 
   # 5. Port listening?
   if (Test-BridgeWebSocket) {
-    Pass "TLS and WebSocket handshake passed (wss://localhost:$Port)"
-  } else { Err "WSS handshake failed on port ${Port}: check certificate trust/expiry, SSL binding and bridge process"; $failures++ }
+    Pass "WebSocket handshake passed (${Protocol}://localhost:$Port)"
+  } else { Err "WebSocket handshake failed on port ${Port}: check protocol, bridge process and TLS configuration if using WSS"; $failures++ }
 
   # 6. URL ACL?
-  $acl = (cmd /c "netsh http show urlacl url=https://localhost:$Port/ 2>nul") -join "`n"
+  $acl = (cmd /c "netsh http show urlacl url=${HttpProtocol}://localhost:$Port/ 2>nul") -join "`n"
   if ($acl -match 'BUILTIN\\Users') { Pass "URL ACL grants BUILTIN\Users access to port $Port" }
   else { Warn "No URL ACL found for port $Port - non-admin users may not be able to (re)start the bridge" }
 
   Write-Host "`n--- WebSocket / TLS configuration ---"
-  Write-Host "Endpoint: wss://localhost:$Port/ (frontend must use this exact hostname)"
+  Write-Host "Endpoint: ${Protocol}://localhost:$Port/ (frontend must use this exact hostname)"
+  if ($Protocol -eq 'wss') {
   netsh http show sslcert hostnameport="localhost:$Port"
   $certificates = @(Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq "ThalesBridge localhost $Port" })
   if ($certificates.Count -eq 0) { Err 'Bridge TLS certificate missing'; $failures++ }
@@ -219,6 +245,7 @@ if ($Doctor) {
     elseif ($cert.NotAfter -lt (Get-Date).AddDays(30)) { Warn 'TLS certificate expires within 30 days: re-run the installer' }
     if (-not (Test-Path "Cert:\LocalMachine\Root\$($cert.Thumbprint)")) { Err 'Certificate not trusted by this machine'; $failures++ }
   }
+  } else { Write-Host 'WS mode: no TLS certificate is required.' }
   Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
     Select-Object LocalAddress, LocalPort, State, OwningProcess | Format-Table | Out-String | Write-Host
   Write-Host "`n--- Startup / process information ---"
@@ -276,19 +303,21 @@ if ($ConfigureEndpoint) {
   $launcherBytes = [IO.File]::ReadAllBytes($launcherPath)
   $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
   $oldPort = [int]$settings.port
-  if ($oldPort -eq $Port) { Pass 'Endpoint is already configured'; exit 0 }
+  $oldProtocol = if ($settings.protocol -eq 'ws') { 'ws' } else { 'wss' }
+  if ($oldPort -eq $Port -and $oldProtocol -eq $Protocol) { Pass 'Endpoint is already configured'; exit 0 }
   $task = Get-ScheduledTask -TaskName $TaskName
   if ($task.State -eq 'Disabled') { Fail 'Enable auto-start or start the bridge before changing the endpoint.' }
   $wasRunning = $task.State -eq 'Running'
-  if (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue) {
+  if ($oldPort -ne $Port -and (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) {
     Fail "Port $Port is already in use. Choose another port."
   }
   $launcherText = [IO.File]::ReadAllText($launcherPath)
-  $commandPattern = '(?m)^' + [regex]::Escape('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $oldPort) + '(?=\r?$)'
+  $commandPattern = '(?m)^' + [regex]::Escape('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $oldPort) + '(?: --ws)?(?=\r?$)'
   if ($launcherText -notmatch $commandPattern) { Fail 'Launcher format is not recognized. Re-run the installer to repair it.' }
-  $newLauncher = [regex]::Replace($launcherText, $commandPattern, ('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $Port))
+  $transportArg = if ($Protocol -eq 'ws') { ' --ws' } else { '' }
+  $newLauncher = [regex]::Replace($launcherText, $commandPattern, ('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $Port + $transportArg))
   # New binding is prepared before interrupting the current connection.
-  Set-BridgeTls -Port $Port
+  Set-BridgeEndpoint -Port $Port -Protocol $Protocol
   try {
     Disable-ScheduledTask -TaskName $TaskName | Out-Null
     Stop-ScheduledTask -TaskName $TaskName
@@ -301,8 +330,9 @@ if ($ConfigureEndpoint) {
       Start-Sleep -Seconds 1
       if (Test-BridgeWebSocket) { $connected = $true; break }
     }
-    if (-not $connected) { throw "Trusted WSS handshake failed on port $Port" }
+    if (-not $connected) { throw "WebSocket handshake failed on port $Port" }
     $settings.port = $Port
+    $settings | Add-Member -NotePropertyName protocol -NotePropertyValue $Protocol -Force
     $settings | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
   } catch {
     $failure = $_.Exception.Message
@@ -313,11 +343,11 @@ if ($ConfigureEndpoint) {
     [IO.File]::WriteAllBytes($settingsPath, $settingsBytes)
     Enable-ScheduledTask -TaskName $TaskName | Out-Null
     if ($wasRunning) { Start-ScheduledTask -TaskName $TaskName }
-    try { Remove-BridgeTls -Port $Port } catch { Warn $_.Exception.Message }
-    Fail "$failure. Restored endpoint wss://localhost:$oldPort/."
+    try { Remove-BridgeEndpoint -Port $Port -Protocol $Protocol } catch { Warn $_.Exception.Message }
+    Fail "$failure. Restored endpoint ${oldProtocol}://localhost:$oldPort/."
   }
-  try { Remove-BridgeTls -Port $oldPort } catch { Warn "Endpoint changed, but old TLS cleanup failed: $($_.Exception.Message)" }
-  Pass "Endpoint changed to wss://localhost:$Port/. Update the frontend URL to match."
+  try { Remove-BridgeEndpoint -Port $oldPort -Protocol $oldProtocol } catch { Warn "Endpoint changed, but old TLS cleanup failed: $($_.Exception.Message)" }
+  Pass "Endpoint changed to ${Protocol}://localhost:$Port/. Update the frontend URL to match."
   exit 0
 }
 
@@ -400,7 +430,7 @@ Copy-Item (Join-Path $scriptDir 'setup.ps1') $InstallDir -Force
 if (Test-Path (Join-Path $scriptDir 'uninstall.ps1')) {
   Copy-Item (Join-Path $scriptDir 'uninstall.ps1') $InstallDir -Force
 }
-@{ port = $Port } | ConvertTo-Json | Set-Content (Join-Path $InstallDir 'bridge-settings.json') -Encoding UTF8
+@{ port = $Port; protocol = $Protocol } | ConvertTo-Json | Set-Content (Join-Path $InstallDir 'bridge-settings.json') -Encoding UTF8
 $managerPath = Join-Path $InstallDir 'ThalesBridgeManager.exe'
 if (-not (Test-Path $managerPath)) { Fail 'Desktop manager missing. Use the new complete installer or build-release script.' }
 $shell = New-Object -ComObject WScript.Shell
@@ -415,6 +445,7 @@ Write-Host "  installed to $InstallDir" -ForegroundColor Green
 # ---- 4. Launcher (SDK Bin on PATH + writable working dir) ------------------
 Step "4/7 Launcher"
 $launcher = Join-Path $InstallDir 'run-bridge.cmd'
+$transportArg = if ($Protocol -eq 'ws') { ' --ws' } else { '' }
 @"
 @echo off
 rem Auto-generated by setup.ps1 - native Thales DLLs resolve via PATH; the
@@ -422,12 +453,12 @@ rem working directory must be writable (SDK log files).
 set "PATH=$sdkBin;%PATH%"
 if not exist "%LOCALAPPDATA%\ThalesBridge" mkdir "%LOCALAPPDATA%\ThalesBridge"
 cd /d "%LOCALAPPDATA%\ThalesBridge"
-"$InstallDir\ThalesBridge.exe" $Port
+"$InstallDir\ThalesBridge.exe" $Port$transportArg
 exit /b %ERRORLEVEL%
 "@ | Set-Content -Path $launcher -Encoding ASCII
 Write-Host "  wrote $launcher" -ForegroundColor Green
 
-Set-BridgeTls -Port $Port
+Set-BridgeEndpoint -Port $Port -Protocol $Protocol
 
 # ---- 6. Scheduled task: start at boot (or at logon with -LogonStart) --------
 Step "6/7 Scheduled task"
@@ -475,7 +506,7 @@ foreach ($i in 1..15) {
   }
 }
 if ($listening) {
-  Write-Host "`nSUCCESS - bridge is serving wss://localhost:$Port" -ForegroundColor Green
+  Write-Host "`nSUCCESS - bridge is serving ${Protocol}://localhost:$Port" -ForegroundColor Green
   Write-Host "Plug in the reader if it isn't yet: the bridge retries every 10s until it appears."
   Write-Host "Run 'setup.ps1 -Doctor' any time to re-check this install without reinstalling."
 } else {

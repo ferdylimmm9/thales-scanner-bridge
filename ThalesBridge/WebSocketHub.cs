@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace ThalesBridge;
 
-/// <summary>Localhost-only HTTPS listener; HTTP.sys manages the TLS certificate.</summary>
+/// <summary>Localhost-only HTTP/HTTPS listener; HTTP.sys manages TLS when WSS is selected.</summary>
 public sealed class WebSocketHub : IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -22,11 +22,14 @@ public sealed class WebSocketHub : IAsyncDisposable
     private Task? _acceptTask;
     private byte[] _lastStatus = Serialize(ScannerMessage.StatusMsg("idle", "automatic"));
 
-    public WebSocketHub(int port)
+    private readonly string _httpScheme;
+
+    public WebSocketHub(int port, bool secure = true)
     {
         if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         _port = port;
-        _listener.Prefixes.Add($"https://localhost:{port}/");
+        _httpScheme = secure ? "https" : "http";
+        _listener.Prefixes.Add($"{_httpScheme}://localhost:{port}/");
     }
 
     public void Start()
@@ -35,8 +38,8 @@ public sealed class WebSocketHub : IAsyncDisposable
         catch (HttpListenerException ex)
         {
             throw new InvalidOperationException(
-                $"Could not listen on https://localhost:{_port}/ (Windows error {ex.ErrorCode}). "
-                + "Run setup.ps1 as Administrator to configure the HTTPS URL ACL and TLS certificate; "
+                $"Could not listen on {_httpScheme}://localhost:{_port}/ (Windows error {ex.ErrorCode}). "
+                + "Run setup.ps1 as Administrator to configure the URL ACL and, for WSS, the TLS certificate; "
                 + $"check for another bridge with: netstat -ano | findstr :{_port}", ex);
         }
         _acceptTask = AcceptLoopAsync();
