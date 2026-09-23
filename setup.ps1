@@ -424,8 +424,24 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
   Stop-ScheduledTask -TaskName $TaskName
 }
 Get-Process ThalesBridge, ThalesBridgeManager -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
+# Stop-Process returns before the OS releases the exe's DLL locks - wait for the
+# process to disappear, then retry the copy while handles are released.
+foreach ($i in 1..20) {
+  if (-not (Get-Process ThalesBridge, ThalesBridgeManager -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Milliseconds 250
+}
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-Copy-Item "$srcDir\*" $InstallDir -Recurse -Force
+$copied = $false
+foreach ($i in 1..10) {
+  try {
+    Copy-Item "$srcDir\*" $InstallDir -Recurse -Force -ErrorAction Stop
+    $copied = $true; break
+  } catch {
+    if ($i -eq 1) { Write-Host "  install dir still locked - retrying up to 10s..." -ForegroundColor Yellow }
+    Start-Sleep -Seconds 1
+  }
+}
+if (-not $copied) { Fail "could not overwrite $InstallDir - something still holds files there (old bridge or manager process?). Close it and re-run setup.ps1." }
 Copy-Item (Join-Path $scriptDir 'setup.ps1') $InstallDir -Force
 if (Test-Path (Join-Path $scriptDir 'uninstall.ps1')) {
   Copy-Item (Join-Path $scriptDir 'uninstall.ps1') $InstallDir -Force
