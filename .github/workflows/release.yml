@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Check out complete history
         uses: actions/checkout@v4
@@ -32,6 +32,12 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      - name: Install verified Inno Setup compiler
+        shell: pwsh
+        run: |
+          $compiler = ./packaging/install-compiler.ps1
+          "ISCC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install release tooling
         run: npm ci

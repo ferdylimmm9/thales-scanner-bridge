@@ -27,6 +27,8 @@ internal sealed partial class InstallerForm : Form
     private readonly CheckBox startAtLogon = new();
     private readonly Button browse = new();
     private readonly Button install = new();
+    private readonly ComboBox setupAction = new();
+    private bool uninstallSelected => setupAction.SelectedIndex == 2;
     private readonly Button close = new();
     private readonly RichTextBox log = new();
     private readonly Label status = new();
@@ -62,7 +64,7 @@ internal sealed partial class InstallerForm : Form
 
         var title = new Label
         {
-            Text = "Install Thales Scanner Bridge",
+            Text = "Thales Scanner Bridge Setup",
             Font = new Font("Segoe UI Semibold", 18F),
             AutoSize = true,
             Location = new Point(24, 20)
@@ -149,7 +151,28 @@ internal sealed partial class InstallerForm : Form
         log.Font = new Font("Consolas", 9F);
         log.WordWrap = false;
 
-        install.Text = "Install";
+        setupAction.DropDownStyle = ComboBoxStyle.DropDownList;
+        setupAction.Items.AddRange(["Install", "Reinstall / Repair", "Uninstall"]);
+        setupAction.Location = new Point(30, 635);
+        setupAction.Size = new Size(220, 28);
+        setupAction.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        setupAction.SelectedIndexChanged += (_, _) =>
+        {
+            installSucceeded = false;
+            install.Text = uninstallSelected ? "Uninstall" : setupAction.SelectedIndex == 1 ? "Reinstall" : "Install";
+            SetBusy(false);
+        };
+        var installedDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "ThalesBridge");
+        setupAction.SelectedIndex = Directory.Exists(installedDirectory) ? 1 : 0;
+        try
+        {
+            using var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(installedDirectory, "bridge-settings.json")));
+            port.Value = Math.Clamp(settings.RootElement.GetProperty("port").GetInt32(), 1, 65535);
+            if (settings.RootElement.TryGetProperty("protocol", out var protocol) && protocol.GetString() == "ws") endpointScheme = "ws";
+            AppendLog($"Existing installation detected: {endpointScheme}://localhost:{port.Value}/. Reinstall preserves this endpoint.");
+        }
+        catch (Exception ex) { AppendLog("No readable existing endpoint settings: " + ex.Message); }
+
         install.Size = new Size(110, 34);
         install.Location = new Point(460, 632);
         install.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
@@ -165,7 +188,7 @@ internal sealed partial class InstallerForm : Form
         CancelButton = close;
         Controls.AddRange([
             title, intro, status, sdkLabel, sdkMsi, browse, portLabel, port,
-            disableUvIr, startAtLogon, connectionGroup, logLabel, log, install, close
+            disableUvIr, startAtLogon, connectionGroup, logLabel, log, setupAction, install, close
         ]);
         FormClosing += ConfirmCloseWhileRunning;
         FormClosed += (_, _) => StopMonitor();
@@ -192,20 +215,26 @@ internal sealed partial class InstallerForm : Form
 
     private async Task RunInstallAsync()
     {
-        if (!Directory.Exists(SdkRoot) && string.IsNullOrWhiteSpace(sdkMsi.Text))
+        if (!uninstallSelected && !Directory.Exists(SdkRoot) && string.IsNullOrWhiteSpace(sdkMsi.Text))
         {
             MessageBox.Show(this,
                 "The Thales SDK is not installed. Select the licensed Thales SDK .msi first.",
                 "SDK required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        if (!string.IsNullOrWhiteSpace(sdkMsi.Text) && !File.Exists(sdkMsi.Text))
+        if (!uninstallSelected && !string.IsNullOrWhiteSpace(sdkMsi.Text) && !File.Exists(sdkMsi.Text))
         {
             MessageBox.Show(this, "The selected SDK installer does not exist.", "File not found",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
+        var removing = uninstallSelected;
+        if (removing && MessageBox.Show(this, "Remove the bridge, startup task, shortcuts and local TLS configuration? The Thales SDK and diagnostic logs will be kept.",
+            "Uninstall Thales Scanner Bridge", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        var previousMonitor = monitorTask;
+        StopMonitor();
+        if (previousMonitor != null) await previousMonitor;
         SetBusy(true);
         log.Clear();
         AppendLog("Preparing installation files...");
@@ -234,18 +263,27 @@ internal sealed partial class InstallerForm : Form
             start.ArgumentList.Add("-ExecutionPolicy");
             start.ArgumentList.Add("Bypass");
             start.ArgumentList.Add("-File");
-            start.ArgumentList.Add(Path.Combine(workDir, "setup.ps1"));
-            start.ArgumentList.Add("-Port");
-            start.ArgumentList.Add(((int)port.Value).ToString());
-            if (!string.IsNullOrWhiteSpace(sdkMsi.Text))
+            start.ArgumentList.Add(Path.Combine(workDir, removing ? "uninstall.ps1" : "setup.ps1"));
+            if (!removing)
             {
-                start.ArgumentList.Add("-SdkMsi");
-                start.ArgumentList.Add(sdkMsi.Text.Trim());
+                start.ArgumentList.Add("-Port");
+                start.ArgumentList.Add(((int)port.Value).ToString());
             }
-            if (!disableUvIr.Checked)
-                start.ArgumentList.Add("-SkipUvIrPatch");
-            if (startAtLogon.Checked)
-                start.ArgumentList.Add("-LogonStart");
+            if (removing) start.ArgumentList.Add("-KeepLogs");
+            else
+            {
+                start.ArgumentList.Add("-Protocol");
+                start.ArgumentList.Add(endpointScheme);
+                if (!string.IsNullOrWhiteSpace(sdkMsi.Text))
+                {
+                    start.ArgumentList.Add("-SdkMsi");
+                    start.ArgumentList.Add(sdkMsi.Text.Trim());
+                }
+                if (!disableUvIr.Checked)
+                    start.ArgumentList.Add("-SkipUvIrPatch");
+                if (startAtLogon.Checked)
+                    start.ArgumentList.Add("-LogonStart");
+            }
 
             installerProcess = new Process { StartInfo = start, EnableRaisingEvents = true };
             installerProcess.OutputDataReceived += (_, e) => { if (e.Data is not null) AppendLog(e.Data); };
@@ -260,8 +298,19 @@ internal sealed partial class InstallerForm : Form
             if (installerProcess.ExitCode != 0)
                 throw new InvalidOperationException($"Installation failed with exit code {installerProcess.ExitCode}. See the log above.");
 
+            if (removing)
+            {
+                installSucceeded = true;
+                status.Text = "Uninstalled successfully. SDK and logs kept.";
+                status.ForeColor = Color.DarkGreen;
+                install.Text = "Uninstalled";
+                AppendLog("Uninstall completed. Select Install to install again from this same setup window.");
+                SetConnectionLabel(bridgeConnection, "Bridge: uninstalled", Color.DimGray);
+                SetConnectionLabel(scannerConnection, "Scanner: bridge not installed", Color.DimGray);
+                return;
+            }
             installSucceeded = true;
-            status.Text = $"Installed successfully. Bridge URL: wss://localhost:{(int)port.Value}";
+            status.Text = $"Installed successfully. Bridge URL: {endpointScheme}://localhost:{(int)port.Value}";
             status.ForeColor = Color.DarkGreen;
             install.Text = "Installed";
             AppendLog("Installation completed successfully.");
@@ -272,10 +321,10 @@ internal sealed partial class InstallerForm : Form
         }
         catch (Exception ex)
         {
-            status.Text = "Installation failed. Review the log below.";
+            status.Text = removing ? "Uninstall failed. Review the log below." : "Installation failed. Review the log below.";
             status.ForeColor = Color.DarkRed;
             AppendLog("ERROR: " + ex.Message);
-            MessageBox.Show(this, ex.Message, "Installation failed",
+            MessageBox.Show(this, ex.Message, removing ? "Uninstall failed" : "Installation failed",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -305,8 +354,10 @@ internal sealed partial class InstallerForm : Form
 
     private async Task MonitorBridgeAsync(int bridgePort, CancellationToken cancellationToken)
     {
+        var endpoint = $"{endpointScheme}://localhost:{bridgePort}/";
         while (!cancellationToken.IsCancellationRequested)
         {
+            AppendLog($"Connecting to {endpoint}; attempt {connectionAttempts + 1}.");
             SetConnectionLabel(bridgeConnection, $"Bridge: connecting to localhost:{bridgePort}...", Color.DarkOrange);
 
             connectionAttempts++;
@@ -349,9 +400,8 @@ internal sealed partial class InstallerForm : Form
             catch (Exception ex)
             {
                 SetConnectionLabel(lastError, $"Last connection error ({DateTime.Now:T}): {ex.Message}", Color.DarkRed);
-                if (connectionAttempts == 1 || connectionAttempts % 15 == 0)
-                    AppendLog($"{DateTime.Now:T} Connection failed (attempt {connectionAttempts}): {ex.Message}");
-                SetConnectionLabel(bridgeConnection, $"Bridge: connection failed on port {bridgePort} (check TLS/setup)", Color.DarkRed);
+                AppendLog($"ERROR connection to {endpoint} (attempt {connectionAttempts}): {ex}. Retrying in 2 seconds. Check protocol/port, URL ACL, and certificate trust for WSS; use Diagnostics for listener conflicts.");
+                SetConnectionLabel(bridgeConnection, $"Bridge: connection failed on port {bridgePort} (check protocol/port/setup)", Color.DarkRed);
                 SetConnectionLabel(scannerConnection, "Scanner: unavailable until bridge starts", Color.DimGray);
                 SetActivity("Activity: waiting for installation or bridge startup", Color.DimGray);
             }
@@ -508,7 +558,18 @@ internal sealed partial class InstallerForm : Form
             return;
         }
         if (log.TextLength > 100_000) log.Clear();
-        log.AppendText(text + Environment.NewLine);
+        var entry = $"[{DateTimeOffset.Now:O}] {text}";
+        try
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThalesBridge", "Logs");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "manager.log");
+            if (File.Exists(path) && new FileInfo(path).Length > 5 * 1024 * 1024)
+                File.Move(path, path + ".previous", overwrite: true);
+            File.AppendAllText(path, entry + Environment.NewLine);
+        }
+        catch (Exception ex) { log.AppendText("Log file write failed: " + ex.Message + Environment.NewLine); }
+        log.AppendText(entry + Environment.NewLine);
         log.SelectionStart = log.TextLength;
         log.ScrollToCaret();
     }
@@ -517,11 +578,12 @@ internal sealed partial class InstallerForm : Form
     {
         install.Enabled = !busy && !installSucceeded;
         close.Enabled = !busy;
-        browse.Enabled = !busy;
-        sdkMsi.Enabled = !busy;
-        port.Enabled = !busy;
-        disableUvIr.Enabled = !busy;
-        startAtLogon.Enabled = !busy;
+        setupAction.Enabled = !busy;
+        browse.Enabled = !busy && !uninstallSelected;
+        sdkMsi.Enabled = !busy && !uninstallSelected;
+        port.Enabled = !busy && !uninstallSelected;
+        disableUvIr.Enabled = !busy && !uninstallSelected;
+        startAtLogon.Enabled = !busy && !uninstallSelected;
         UseWaitCursor = busy;
     }
 

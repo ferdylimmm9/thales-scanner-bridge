@@ -42,6 +42,9 @@ param(
   [int]$Port = 8765,
   [ValidateSet('ws', 'wss')]
   [string]$Protocol = 'wss',
+  [switch]$ManagedInstall,
+  [switch]$ManagerOwnedEndpoint,
+  [switch]$NoAutoStart,
   [switch]$SkipUvIrPatch,
   [switch]$LogonStart,
   [switch]$Doctor,
@@ -211,12 +214,22 @@ if ($Doctor) {
       } else {
         Warn "Trigger: at logon (any user) - nothing runs until someone logs in. Re-run setup.ps1 (no -LogonStart) to start it at boot instead."
       }
-    } else { Err "Task has no boot or logon trigger - it will not auto-start"; $failures++ }
+    } else {
+      $startupSettings = Join-Path $InstallDir 'bridge-settings.json'
+      if ((Test-Path $startupSettings) -and ((Get-Content $startupSettings -Raw | ConvertFrom-Json).startup -eq 'manual')) {
+        Pass 'Manual startup selected - no automatic trigger is expected'
+      } else { Err "Task has no boot or logon trigger - it will not auto-start"; $failures++ }
+    }
 
     if ($xml -match '<UserId>S-1-5-18</UserId>' -or $xml -match 'NT AUTHORITY\\SYSTEM') {
       Pass "Runs as: SYSTEM"
     }
-  } else { Err "Scheduled task '$TaskName' not found"; $failures++ }
+  } else {
+    $installedSettings = Join-Path $InstallDir 'bridge-settings.json'
+    if ((Test-Path $installedSettings) -and ((Get-Content $installedSettings -Raw | ConvertFrom-Json).startup -eq 'manager')) {
+      Pass 'Scanner Manager controls the bridge. No startup task is expected.'
+    } else { Err "Scheduled task '$TaskName' not found"; $failures++ }
+  }
 
   # 4. Process running?
   $proc = Get-Process ThalesBridge -ErrorAction SilentlyContinue
@@ -224,7 +237,9 @@ if ($Doctor) {
   else { Warn "ThalesBridge.exe is not currently running" }
 
   # 5. Port listening?
-  if (Test-BridgeWebSocket) {
+  if (-not $proc -and (Test-Path (Join-Path $InstallDir 'bridge-settings.json')) -and ((Get-Content (Join-Path $InstallDir 'bridge-settings.json') -Raw | ConvertFrom-Json).startup -eq 'manager')) {
+    Warn 'Bridge paused. Click Run before testing the WebSocket connection.'
+  } elseif (Test-BridgeWebSocket) {
     Pass "WebSocket handshake passed (${Protocol}://localhost:$Port)"
   } else { Err "WebSocket handshake failed on port ${Port}: check protocol, bridge process and TLS configuration if using WSS"; $failures++ }
 
@@ -300,16 +315,37 @@ if ($ConfigureEndpoint) {
   $settingsPath = Join-Path $InstallDir 'bridge-settings.json'
   $launcherPath = Join-Path $InstallDir 'run-bridge.cmd'
   $settingsBytes = [IO.File]::ReadAllBytes($settingsPath)
-  $launcherBytes = [IO.File]::ReadAllBytes($launcherPath)
+  $launcherBytes = if (-not $ManagerOwnedEndpoint) { [IO.File]::ReadAllBytes($launcherPath) }
   $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
   $oldPort = [int]$settings.port
   $oldProtocol = if ($settings.protocol -eq 'ws') { 'ws' } else { 'wss' }
   if ($oldPort -eq $Port -and $oldProtocol -eq $Protocol) { Pass 'Endpoint is already configured'; exit 0 }
-  $task = Get-ScheduledTask -TaskName $TaskName
+  $task = if (-not $ManagerOwnedEndpoint) { Get-ScheduledTask -TaskName $TaskName }
   if ($task.State -eq 'Disabled') { Fail 'Enable auto-start or start the bridge before changing the endpoint.' }
   $wasRunning = $task.State -eq 'Running'
-  if ($oldPort -ne $Port -and (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) {
-    Fail "Port $Port is already in use. Choose another port."
+  if (($ManagerOwnedEndpoint -or $oldPort -ne $Port) -and (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) {
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+    foreach ($listener in $listeners) {
+      $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+      Write-Host "ENDPOINT_CONFLICT ${Protocol}://localhost:$Port/ PID=$($listener.OwningProcess) Process=$($owner.ProcessName) Address=$($listener.LocalAddress)"
+    }
+    Fail "Port $Port is already in use. Choose another port; see ENDPOINT_CONFLICT above for the listener owner."
+
+  }
+  if ($ManagerOwnedEndpoint) {
+    if (Get-Process ThalesBridge -ErrorAction SilentlyContinue) { Fail 'Pause the bridge before saving its endpoint.' }
+    try {
+      Set-BridgeEndpoint -Port $Port -Protocol $Protocol
+      $settings.port = $Port
+      $settings | Add-Member -NotePropertyName protocol -NotePropertyValue $Protocol -Force
+      $settings | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
+    } catch {
+      [IO.File]::WriteAllBytes($settingsPath, $settingsBytes)
+      Fail "Could not save the endpoint: $($_.Exception.Message). Previous settings retained."
+    }
+    try { Remove-BridgeEndpoint -Port $oldPort -Protocol $oldProtocol } catch { Warn "Old endpoint cleanup failed: $($_.Exception.Message)" }
+    Pass "Saved ${Protocol}://localhost:$Port/. Run the bridge to verify the connection."
+    exit 0
   }
   $launcherText = [IO.File]::ReadAllText($launcherPath)
   $commandPattern = '(?m)^' + [regex]::Escape('"' + (Join-Path $InstallDir 'ThalesBridge.exe') + '" ' + $oldPort) + '(?: --ws)?(?=\r?$)'
@@ -328,6 +364,7 @@ if ($ConfigureEndpoint) {
     $connected = $false
     foreach ($attempt in 1..10) {
       Start-Sleep -Seconds 1
+      Write-Host "Checking ${Protocol}://localhost:$Port/ (attempt $attempt of 10)"
       if (Test-BridgeWebSocket) { $connected = $true; break }
     }
     if (-not $connected) { throw "WebSocket handshake failed on port $Port" }
@@ -402,6 +439,7 @@ if ($SkipUvIrPatch) {
 # ---- 3. Bridge binaries ----------------------------------------------------
 Step "3/7 Bridge binaries"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $ManagedInstall) {
 $prebuilt = Join-Path $scriptDir 'publish'
 $projDir = Join-Path $scriptDir 'ThalesBridge'
 $srcDir = $null
@@ -446,9 +484,11 @@ Copy-Item (Join-Path $scriptDir 'setup.ps1') $InstallDir -Force
 if (Test-Path (Join-Path $scriptDir 'uninstall.ps1')) {
   Copy-Item (Join-Path $scriptDir 'uninstall.ps1') $InstallDir -Force
 }
-@{ port = $Port; protocol = $Protocol } | ConvertTo-Json | Set-Content (Join-Path $InstallDir 'bridge-settings.json') -Encoding UTF8
+}
+@{ port = $Port; protocol = $Protocol; startup = $(if ($ManagedInstall) { 'manager' } elseif ($NoAutoStart) { 'manual' } elseif ($LogonStart) { 'logon' } else { 'boot' }) } | ConvertTo-Json | Set-Content (Join-Path $InstallDir 'bridge-settings.json') -Encoding UTF8
 $managerPath = Join-Path $InstallDir 'ThalesBridgeManager.exe'
 if (-not (Test-Path $managerPath)) { Fail 'Desktop manager missing. Use the new complete installer or build-release script.' }
+if (-not $ManagedInstall) {
 $shell = New-Object -ComObject WScript.Shell
 foreach ($folder in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))) {
   $shortcut = $shell.CreateShortcut((Join-Path $folder 'Thales Scanner Bridge.lnk'))
@@ -456,7 +496,17 @@ foreach ($folder in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [E
   $shortcut.WorkingDirectory = $InstallDir
   $shortcut.Save()
 }
+}
 Write-Host "  installed to $InstallDir" -ForegroundColor Green
+
+Set-BridgeEndpoint -Port $Port -Protocol $Protocol
+if ($ManagedInstall) {
+  $legacyTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  if ($legacyTask) { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false }
+  Remove-Item (Join-Path $InstallDir 'run-bridge.cmd') -Force -ErrorAction SilentlyContinue
+  Pass 'Bridge installed. Open Scanner Manager and click Run. No startup task is registered.'
+  exit 0
+}
 
 # ---- 4. Launcher (SDK Bin on PATH + writable working dir) ------------------
 Step "4/7 Launcher"
@@ -473,8 +523,6 @@ cd /d "%LOCALAPPDATA%\ThalesBridge"
 exit /b %ERRORLEVEL%
 "@ | Set-Content -Path $launcher -Encoding ASCII
 Write-Host "  wrote $launcher" -ForegroundColor Green
-
-Set-BridgeEndpoint -Port $Port -Protocol $Protocol
 
 # ---- 6. Scheduled task: start at boot (or at logon with -LogonStart) --------
 Step "6/7 Scheduled task"
@@ -502,10 +550,13 @@ if ($LogonStart) {
   $taskPrincipal = New-ScheduledTaskPrincipal `
     -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 }
-Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $taskTrigger `
-  -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+$registration = @{ TaskName=$TaskName; Action=$taskAction; Principal=$taskPrincipal; Settings=$taskSettings; Force=$true }
+if (-not $NoAutoStart) { $registration.Trigger = $taskTrigger }
+Register-ScheduledTask @registration | Out-Null
 Enable-ScheduledTask -TaskName $TaskName | Out-Null
-if ($LogonStart) {
+if ($NoAutoStart) {
+  Write-Host "  automatic startup disabled; start the bridge from Scanner Manager." -ForegroundColor Green
+} elseif ($LogonStart) {
   Write-Host "  task '$TaskName' runs the bridge at logon (as $($taskPrincipal.UserId))." -ForegroundColor Green
 } else {
   Write-Host "  task '$TaskName' runs the bridge at boot as SYSTEM - no logon needed." -ForegroundColor Green

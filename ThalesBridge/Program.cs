@@ -17,6 +17,13 @@ if (args.Contains("--version"))
     return 0;
 }
 
+using var instance = new Mutex(false, @"Global\ThalesScannerBridgeProcess", out bool firstInstance);
+if (!firstInstance)
+{
+    Console.Error.WriteLine("[bridge] Another bridge instance is already running. Stop it before starting a new one.");
+    return 1;
+}
+
 bool secure = !args.Contains("--ws");
 string scheme = secure ? "wss" : "ws";
 bool verbose = args.Contains("--verbose");
@@ -94,7 +101,12 @@ Console.WriteLine("[bridge] running. Place a document on the reader. Press Ctrl+
 var exit = new TaskCompletionSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; exit.TrySetResult(); };
 AppDomain.CurrentDomain.ProcessExit += (_, _) => exit.TrySetResult();
-await exit.Task;
+if (args.Contains("--manager-owned"))
+{
+    // Closing the manager's pipe (including on process exit) requests shutdown.
+    await Task.WhenAny(exit.Task, Task.Run(() => Console.ReadLine()));
+}
+else await exit.Task;
 
 Console.WriteLine("[bridge] shutting down.");
 return 0;

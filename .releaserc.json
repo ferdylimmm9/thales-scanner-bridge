@@ -6,7 +6,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "./build-release.sh ${nextRelease.version}"
+        "prepareCmd": "pwsh -NoProfile -File ./build-release.ps1 -Version ${nextRelease.version}"
       }
     ],
     [

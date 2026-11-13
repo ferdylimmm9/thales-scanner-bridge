@@ -1,56 +1,27 @@
-<#
-.SYNOPSIS
-  Builds release assets, including the double-click Windows installer.
-
-.DESCRIPTION
-  Maintainer/build-server script. The client receives ThalesBridgeSetup.exe and
-  does not need PowerShell or the .NET SDK to launch the installer.
-#>
+<# Builds the offline Inno Setup installer and portable Windows binaries. #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$Version
+  [Parameter(Mandatory=$true)][ValidatePattern('^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$')][string]$Version,
+  [string]$Compiler = $env:ISCC
 )
-
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+if (-not $Compiler) { $Compiler = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+if (-not $Compiler -or -not (Test-Path $Compiler)) { throw 'Install Inno Setup 7.1.1 using packaging/install-compiler.ps1 and pass -Compiler or set ISCC.' }
 $publishDir = Join-Path $root 'publish'
-$publishZip = Join-Path $root 'publish.zip'
-$payloadDir = Join-Path $root '.installer-payload'
-$payloadZip = Join-Path $root 'Installer\payload.zip'
-$installerOut = Join-Path $root 'installer-out'
-$installerExe = Join-Path $root 'ThalesBridgeSetup.exe'
-
+$managerOut = Join-Path $root 'manager-out'
+Remove-Item $publishDir,$managerOut -Recurse -Force -ErrorAction SilentlyContinue
 try {
-  dotnet publish (Join-Path $root 'ThalesBridge') -c Release -r win-x64 `
-    --self-contained true -p:Version=$Version -o $publishDir
+  dotnet publish (Join-Path $root 'ThalesBridge') -c Release -r win-x64 --self-contained true -p:Version=$Version -o $publishDir
   if ($LASTEXITCODE -ne 0) { throw 'Bridge publish failed.' }
-
-  $managerOut = Join-Path $root 'manager-out'
-  dotnet publish (Join-Path $root 'Manager\ThalesBridgeManager.csproj') -c Release -r win-x64 `
-    --self-contained true -p:Version=$Version -o $managerOut
-  if ($LASTEXITCODE -ne 0) { throw 'Desktop manager publish failed.' }
-  Copy-Item (Join-Path $managerOut 'ThalesBridgeManager.exe') $publishDir -Force
-  Remove-Item $managerOut -Recurse -Force
-
-  Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $publishZip -Force
-
-  New-Item -ItemType Directory -Force (Join-Path $payloadDir 'publish') | Out-Null
-  Copy-Item (Join-Path $publishDir '*') (Join-Path $payloadDir 'publish') -Recurse -Force
-  Copy-Item (Join-Path $root 'setup.ps1') $payloadDir -Force
-  Copy-Item (Join-Path $root 'uninstall.ps1') $payloadDir -Force
-  Compress-Archive -Path (Join-Path $payloadDir '*') -DestinationPath $payloadZip -Force
-
-  dotnet publish (Join-Path $root 'Installer\ThalesBridgeInstaller.csproj') `
-    -c Release -r win-x64 --self-contained true -p:Version=$Version -o $installerOut
-  if ($LASTEXITCODE -ne 0) { throw 'Installer publish failed.' }
-
-  Copy-Item (Join-Path $installerOut 'ThalesBridgeSetup.exe') $installerExe -Force
-  Write-Host "Built $installerExe"
-  Write-Host "Built $publishZip"
-}
-finally {
-  Remove-Item $payloadDir -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item $payloadZip -Force -ErrorAction SilentlyContinue
-  Remove-Item $installerOut -Recurse -Force -ErrorAction SilentlyContinue
-}
+  # Share runtime files with the bridge rather than embedding a duplicate runtime in Manager.
+  dotnet publish (Join-Path $root 'Manager/ThalesBridgeManager.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableCompressionInSingleFile=false -p:Version=$Version -o $managerOut
+  if ($LASTEXITCODE -ne 0) { throw 'Manager publish failed.' }
+  Copy-Item (Join-Path $managerOut '*') $publishDir -Recurse -Force
+  Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath (Join-Path $root 'publish.zip') -Force
+  $fileVersion = ($Version -split '[-+]')[0] + '.0'
+  & $Compiler "/DReleaseVersion=$Version" "/DFileVersion=$fileVersion" (Join-Path $root 'packaging/ThalesBridge.iss')
+  if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
+  if (-not (Test-Path (Join-Path $root 'ThalesBridgeSetup.exe'))) { throw 'Installer output missing.' }
+  Write-Host "Built $root\ThalesBridgeSetup.exe and publish.zip"
+} finally { Remove-Item $managerOut -Recurse -Force -ErrorAction SilentlyContinue }

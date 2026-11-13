@@ -14,6 +14,11 @@ internal sealed partial class InstallerForm
     private FlowLayoutPanel? managerActions;
     private Button? applyEndpoint;
     private bool managerView;
+    private Process? bridgeProcess;
+    private Task? bridgeLifetime;
+    private bool closingAfterPause;
+    private Button? runBridgeButton;
+    private Button? pauseBridgeButton;
 
     private void InitializeManagerView()
     {
@@ -41,7 +46,7 @@ internal sealed partial class InstallerForm
         for (int i = 0; i < 12; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var title = new Label { Text = "Thales Scanner Bridge", Font = new Font("Segoe UI", 21F), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
-        var description = new Label { Text = "Manage your local connection and scanner. Closing this window keeps the bridge running.", AutoSize = true, Margin = new Padding(0, 0, 0, 22) };
+        var description = new Label { Text = "Click Run to use the scanner. Pause or close this window to release the reader.", AutoSize = true, Margin = new Padding(0, 0, 0, 22) };
         layout.Controls.Add(title, 0, 0);
         layout.Controls.Add(description, 0, 1);
         var endpointRow = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, Margin = new Padding(0) };
@@ -76,8 +81,9 @@ internal sealed partial class InstallerForm
             label.Margin = new Padding(0, 0, 10, 0);
             states.Controls.Add(label);
         }
-        bridgeConnection.Text = "Bridge: checking connection";
-        scannerConnection.Text = "Scanner: waiting for bridge";
+        bridgeConnection.Text = "Bridge: paused";
+        scannerConnection.Text = "Scanner: released";
+        activity.Text = "Click Run to connect the scanner.";
         layout.Controls.Add(states, 0, 4);
         scannerProgress.Dock = DockStyle.Top;
         scannerProgress.Height = 4;
@@ -98,13 +104,21 @@ internal sealed partial class InstallerForm
         lastError.Margin = new Padding(0, 0, 0, 10);
         layout.Controls.Add(lastError, 0, 9);
         managerActions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 8, 0, 12) };
-        foreach (var (label, command) in new[] { ("Start", "Start"), ("Stop", "Stop"), ("Restart", "Restart"), ("Enable auto-start", "Enable"), ("Diagnostics", "Doctor") })
+        foreach (var (label, command) in new[] { ("Run", "Run"), ("Pause", "Pause"), ("Diagnostics", "Doctor") })
         {
             var button = MakeManagerButton(label);
+            if (command == "Run") runBridgeButton = button;
+            if (command == "Pause") pauseBridgeButton = button;
             button.Click += async (_, _) =>
             {
                 SetManagerBusy(true);
-                try { await RunManagementCommandAsync(command); }
+                try
+                {
+                    if (command == "Run") RunOwnedBridge();
+                    else if (command == "Pause") await PauseOwnedBridgeAsync();
+                    else await RunManagementCommandAsync(command);
+                }
+                catch (Exception ex) { ShowBridgeFailure(ex); }
                 finally { SetManagerBusy(false); }
             };
             managerActions.Controls.Add(button);
@@ -118,6 +132,18 @@ internal sealed partial class InstallerForm
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "Could not save report"); }
         };
         managerActions.Controls.Add(saveReport);
+        var openLogs = MakeManagerButton("Open logs");
+        openLogs.Click += (_, _) =>
+        {
+            try
+            {
+                var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThalesBridge", "Logs");
+                Directory.CreateDirectory(directory);
+                Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
+            }
+            catch (Exception ex) { AppendLog("Cannot open logs: " + ex.Message); }
+        };
+        managerActions.Controls.Add(openLogs);
         layout.Controls.Add(CreateCaptureControls(), 0, 10);
         layout.Controls.Add(managerActions, 0, 11);
         log.Dock = DockStyle.Fill;
@@ -135,15 +161,119 @@ internal sealed partial class InstallerForm
         }
         Resize += (_, _) => FitText();
         FitText();
-        Shown += async (_, _) =>
+        SetManagerBusy(false);
+        FormClosing += async (_, e) =>
         {
-            StartMonitor((int)port.Value);
+            if (closingAfterPause) return;
+            if (managementBusy) { e.Cancel = true; return; }
+            if (bridgeProcess == null) return;
+            e.Cancel = true;
             SetManagerBusy(true);
-            try { await RunManagementCommandAsync("Doctor"); }
+            try
+            {
+                await PauseOwnedBridgeAsync();
+                closingAfterPause = true;
+                BeginInvoke(new Action(Close));
+            }
+            catch (Exception ex) { ShowBridgeFailure(ex); }
             finally { SetManagerBusy(false); }
         };
-        FormClosed += (_, _) => StopMonitor();
-        FormClosing += (_, e) => { if (managementBusy) e.Cancel = true; };
+    }
+
+    private void ShowBridgeFailure(Exception ex)
+    {
+        AppendLog("ERROR: " + ex.Message);
+        SetConnectionLabel(lastError, ex.Message, Color.DarkRed);
+    }
+
+    private void RunOwnedBridge()
+    {
+        if (bridgeProcess != null) return;
+        var existing = Process.GetProcessesByName("ThalesBridge");
+        try
+        {
+            if (existing.Length != 0)
+                throw new InvalidOperationException("Another bridge process is running. Stop the old bridge before clicking Run.");
+        }
+        finally { foreach (var process in existing) process.Dispose(); }
+
+        if (!Directory.Exists(SdkRoot)) throw new DirectoryNotFoundException("Thales SDK not found. Check the licensed SDK installation.");
+        var sdk = Directory.GetDirectories(SdkRoot).OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+        var sdkBin = sdk == null ? null : Path.Combine(sdk, "Bin");
+        if (sdkBin == null || !File.Exists(Path.Combine(sdkBin, "MMMReaderHighLevelAPI.dll")))
+            throw new FileNotFoundException("Thales SDK native library missing. Check SDK installation.");
+        var work = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThalesBridge");
+        Directory.CreateDirectory(work);
+        var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "ThalesBridge.exe"))
+        {
+            WorkingDirectory = work, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        start.ArgumentList.Add(((int)port.Value).ToString());
+        start.ArgumentList.Add("--manager-owned");
+        if (endpointScheme == "ws") start.ArgumentList.Add("--ws");
+        start.Environment["PATH"] = sdkBin + Path.PathSeparator + start.Environment["PATH"];
+        var child = Process.Start(start) ?? throw new InvalidOperationException("Could not launch the bridge.");
+        bridgeProcess = child;
+        previousScannerStatus = null;
+        AppendLog($"Bridge started (PID {child.Id}). Waiting for its WebSocket connection.");
+        StartMonitor((int)port.Value);
+        bridgeLifetime = WatchOwnedBridgeAsync(child);
+    }
+
+    private async Task WatchOwnedBridgeAsync(Process child)
+    {
+        try
+        {
+            var output = ReadEndpointLogAsync(child.StandardOutput, "bridge");
+            var error = ReadEndpointLogAsync(child.StandardError, "bridge ERROR");
+            await child.WaitForExitAsync();
+            await Task.WhenAll(output, error);
+            AppendLog($"Bridge exited with code {child.ExitCode}.");
+            if (child.ExitCode != 0) SetConnectionLabel(lastError, $"Bridge exited with code {child.ExitCode}. See logs.", Color.DarkRed);
+        }
+        catch (Exception ex) { ShowBridgeFailure(ex); }
+        finally
+        {
+            if (bridgeProcess == child)
+            {
+                bridgeProcess = null;
+                StopMonitor();
+                ShowPaused();
+            }
+            child.Dispose();
+            SetManagerBusy(managementBusy);
+        }
+    }
+
+    private void ShowPaused()
+    {
+        SetConnectionLabel(bridgeConnection, "Bridge: paused", Color.DimGray);
+        SetConnectionLabel(scannerConnection, "Scanner: released", Color.DimGray);
+        SetActivity("Click Run to reconnect the scanner.", Color.DimGray);
+    }
+
+    private async Task PauseOwnedBridgeAsync()
+    {
+        var child = bridgeProcess;
+        if (child == null) return;
+        var previousMonitor = monitorTask;
+        StopMonitor();
+        var lifetime = bridgeLifetime ?? Task.CompletedTask;
+        child.StandardInput.Close();
+        try { await lifetime.WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (TimeoutException)
+        {
+            if (bridgeProcess == child && !child.HasExited)
+            {
+                AppendLog("Bridge shutdown timed out; terminating the process to release the reader.");
+                try { child.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) when (child.HasExited) { }
+            }
+            await lifetime.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        if (previousMonitor != null) await previousMonitor;
+        ShowPaused();
     }
 
     private static Button MakeManagerButton(string text)
@@ -163,6 +293,8 @@ internal sealed partial class InstallerForm
         if (managerActions != null) managerActions.Enabled = !busy;
         if (applyEndpoint != null) applyEndpoint.Enabled = !busy;
         endpointEditor.Enabled = !busy;
+        if (runBridgeButton != null) runBridgeButton.Enabled = !busy && bridgeProcess == null;
+        if (pauseBridgeButton != null) pauseBridgeButton.Enabled = !busy && bridgeProcess != null;
     }
 
     private void UpdateManagerIndicator(Label label, Color originalColor)
@@ -189,37 +321,39 @@ internal sealed partial class InstallerForm
         {
             endpointFeedback.Text = "Enter ws://localhost:PORT/ or wss://localhost:PORT/ with a port from 1 to 65535. Remote hosts and paths are not supported.";
             endpointFeedback.ForeColor = Color.FromArgb(143, 68, 30);
+            AppendLog("ERROR endpoint validation: " + endpointFeedback.Text);
             return;
         }
         if (newPort == (int)port.Value && newScheme == endpointScheme)
         {
             endpointEditor.Text = $"{endpointScheme}://localhost:{port.Value}/";
-            endpointFeedback.Text = "This endpoint is already active.";
+            if (bridgeProcess != null) StartMonitor(newPort);
+            endpointFeedback.Text = "Endpoint already saved.";
+            AppendLog($"Reconnect requested: {newScheme}://localhost:{newPort}/");
             return;
         }
         SetManagerBusy(true);
-        endpointFeedback.Text = "Applying endpoint and checking the connection…";
+        endpointFeedback.Text = "Saving endpoint…";
         endpointFeedback.ForeColor = Color.FromArgb(40, 88, 151);
-        var previousMonitor = monitorTask;
-        StopMonitor();
+        AppendLog($"Endpoint change requested: {endpointScheme}://localhost:{port.Value}/ -> {newScheme}://localhost:{newPort}/");
+        var wasRunning = bridgeProcess != null;
         try
         {
-            if (previousMonitor != null) await previousMonitor;
+            if (wasRunning) await PauseOwnedBridgeAsync();
             var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"))
             {
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true
             };
             foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                Path.Combine(AppContext.BaseDirectory, "setup.ps1"), "-ConfigureEndpoint", "-Port", newPort.ToString(), "-Protocol", newScheme })
+                Path.Combine(AppContext.BaseDirectory, "setup.ps1"), "-ConfigureEndpoint", "-ManagerOwnedEndpoint", "-Port", newPort.ToString(), "-Protocol", newScheme, "-Verbose" })
                 start.ArgumentList.Add(argument);
             using var process = Process.Start(start) ?? throw new InvalidOperationException("Cannot start endpoint configuration.");
-            var output = process.StandardOutput.ReadToEndAsync();
-            var error = process.StandardError.ReadToEndAsync();
+            var output = ReadEndpointLogAsync(process.StandardOutput, "setup");
+            var error = ReadEndpointLogAsync(process.StandardError, "setup ERROR");
             await process.WaitForExitAsync();
-            AppendLog((await output).Trim());
-            var errors = (await error).Trim();
-            if (errors.Length > 0) AppendLog(errors);
+            await Task.WhenAll(output, error);
+            AppendLog($"Endpoint configuration exited with code {process.ExitCode}.");
             if (process.ExitCode != 0) throw new InvalidOperationException("Endpoint update failed. See the diagnostic log; the previous endpoint is retained unless recovery also failed.");
             endpointScheme = newScheme;
             port.Value = newPort;
@@ -231,28 +365,26 @@ internal sealed partial class InstallerForm
         {
             endpointFeedback.Text = ex.Message;
             endpointFeedback.ForeColor = Color.FromArgb(143, 68, 30);
-            AppendLog(ex.Message);
+            AppendLog("ERROR endpoint change: " + ex);
         }
         finally
         {
-            previousScannerStatus = null;
-            StartMonitor((int)port.Value);
-            SetManagerBusy(false);
+            try { if (wasRunning && bridgeProcess == null) RunOwnedBridge(); }
+            catch (Exception ex) { ShowBridgeFailure(ex); }
+            finally { SetManagerBusy(false); }
         }
+    }
+
+    private async Task ReadEndpointLogAsync(StreamReader reader, string source)
+    {
+        while (await reader.ReadLineAsync() is { } line)
+            if (!string.IsNullOrWhiteSpace(line)) AppendLog($"[{source}] {line}");
     }
 
     private async Task RunManagementCommandAsync(string command)
     {
-        // Commands are fixed application actions, never shell text from an input field.
-        var script = command switch
-        {
-            "Start" => "Start-ScheduledTask -TaskName ThalesBridge",
-            "Stop" => "Stop-ScheduledTask -TaskName ThalesBridge; Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force",
-            "Restart" => "Stop-ScheduledTask -TaskName ThalesBridge; Get-Process ThalesBridge -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1; Start-ScheduledTask -TaskName ThalesBridge",
-            "Enable" => "Enable-ScheduledTask -TaskName ThalesBridge | Out-Null; Set-ScheduledTask -TaskName ThalesBridge -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) | Out-Null; Start-ScheduledTask -TaskName ThalesBridge",
-            "Doctor" => "& (Join-Path $env:ProgramFiles 'ThalesBridge\\setup.ps1') -Doctor -Port " + (int)port.Value + " -Protocol " + endpointScheme,
-            _ => throw new ArgumentOutOfRangeException(nameof(command))
-        };
+        if (command != "Doctor") throw new ArgumentOutOfRangeException(nameof(command));
+        var script = "& (Join-Path $env:ProgramFiles 'ThalesBridge\\setup.ps1') -Doctor -Port " + (int)port.Value + " -Protocol " + endpointScheme;
         var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"))
         {
             UseShellExecute = false, CreateNoWindow = true,

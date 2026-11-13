@@ -1,5 +1,16 @@
 # thales-scanner-bridge
 
+> Installer migration: release scripts now target Inno Setup 7.1.1. See [Inno installer build and validation](docs/inno-installer.md). The existing local EXE remains the custom preview until an Inno compilation succeeds.
+
+## Manager-controlled release
+
+The Inno installer removes the old startup task. Open Scanner Manager and click
+**Run** to start the bridge without a terminal. **Pause** or close the manager to
+release the scanner. Edit the endpoint in the manager and match it in P360.
+For USB recovery, see [the installation guide](INSTALL-TLDR.md).
+
+The startup-task instructions below apply to legacy installers and script installs.
+
 ## Secure desktop release
 
 The bridge defaults to **`wss://localhost:8765/`** and also supports explicit `ws://` configuration. Update the frontend's
@@ -445,3 +456,43 @@ Both protocols are restricted to localhost. Capture modes and scan data are unch
 An administrator can also run `./setup.ps1 -ConfigureEndpoint -Port 8765 -Protocol ws`
 on Windows. For a new CLI install, add `-Protocol ws` to the setup command.
 Direct bridge launches accept `ThalesBridge.exe 8765 --ws`; omit `--ws` for WSS.
+
+
+### Endpoint reconnection and diagnostic logs
+
+Applying an endpoint restarts the bridge, verifies the new listener, and reconnects
+the desktop manager automatically. Apply the current endpoint to retry its connection.
+P360 must use the matching protocol and port in its own scanner settings.
+
+The manager shows setup output live, every connection attempt, handshake failures
+(including inner exception details), reader errors, and endpoint conflicts with
+the owning PID/process where Windows exposes it. Failed changes retain the existing
+endpoint through setup rollback.
+
+Use **Open logs** to open `%LOCALAPPDATA%\ThalesBridge\Logs`. `manager.log`
+includes timestamps and survives closing the manager; it rotates at 5 MB with one
+previous file. **Save report** exports the current visible session and connection state.
+These manager diagnostics do not include scan images or MRZ payloads.
+
+
+### One installer for installation and maintenance
+
+Open `ThalesBridgeSetup.exe` for **Install**, **Reinstall / Repair**, or **Uninstall**.
+Existing installations default to Reinstall / Repair and load the saved port and
+WS/WSS protocol. Repair stops the old bridge and manager, retries locked file copies,
+replaces the binaries, repairs startup registration, and starts the bridge again.
+A separate uninstall before repair is unnecessary. Review the startup and scanner
+options before reinstalling; these are applied from the setup window.
+
+Uninstall runs the bundled removal script, resolves the installed port, and removes
+the bridge files, startup task, shortcuts and owned TLS/URL reservations. It keeps
+the licensed Thales SDK and diagnostic logs. To perform a clean replacement, choose
+Uninstall, then select Install in the same setup window.
+
+
+### Installer size
+
+Setup and Scanner Manager use .NET single-file assembly compression to reduce
+download size while retaining their bundled runtime for offline use. Both Windows
+and Unix release scripts use these project settings. Startup may take longer while
+assemblies decompress; verify launch time on the target Windows PC.

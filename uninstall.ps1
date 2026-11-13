@@ -29,12 +29,23 @@
 [CmdletBinding()]
 param(
   [int]$Port = $(if ($env:THALES_PORT) { [int]$env:THALES_PORT } else { 8765 }),
+  [switch]$KeepFiles,
   [switch]$KeepLogs
 )
 
 $ErrorActionPreference = 'Stop'
 $InstallDir = 'C:\Program Files\ThalesBridge'
 $TaskName = 'ThalesBridge'
+# Resolve the saved port before removing settings or URL reservations.
+if (-not $PSBoundParameters.ContainsKey('Port') -and -not $env:THALES_PORT) {
+  $settingsPath = Join-Path $InstallDir 'bridge-settings.json'
+  if (Test-Path $settingsPath) {
+    $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+    $savedPort = [int]$settings.port
+    if ($savedPort -lt 1 -or $savedPort -gt 65535) { throw 'Invalid installed port. Specify -Port explicitly.' }
+    $Port = $savedPort
+  }
+}
 
 function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 function Done($msg) { Write-Host "  [OK] $msg" -ForegroundColor Green }
@@ -51,6 +62,7 @@ if (-not $isAdmin) {
     # Running from a file (clone or downloaded copy) - re-run that same file.
     $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Port', $Port)
     if ($KeepLogs) { $argsList += '-KeepLogs' }
+    if ($KeepFiles) { $argsList += '-KeepFiles' }
   } else {
     # Piped in via `irm ... | iex` - there is no file to re-run, so re-fetch.
     $bootstrap = @"
@@ -118,8 +130,14 @@ foreach ($folder in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [E
 
 # ---- 4. Install directory --------------------------------------------------
 Step "4/5 Install directory"
-if (Test-Path $InstallDir) {
-  Remove-Item -Recurse -Force $InstallDir
+if ($KeepFiles) {
+  Skip "File removal is owned by the Windows installer."
+} elseif (Test-Path $InstallDir) {
+  # Windows may retain DLL handles briefly after terminating the processes.
+  foreach ($attempt in 1..10) {
+    try { Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop; break }
+    catch { if ($attempt -eq 10) { throw }; Start-Sleep -Seconds 1 }
+  }
   Done "deleted $InstallDir"
 } else { Skip "$InstallDir does not exist" }
 

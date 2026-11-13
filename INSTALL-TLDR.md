@@ -1,69 +1,44 @@
-# Installation Guide — Thales Scanner Bridge
+# Install Thales Scanner Bridge
 
-Use this guide on the **Windows x64 PC connected to the Thales reader**.
+Use the approved **Inno Setup** `ThalesBridgeSetup.exe` build on a Windows x64 PC
+connected to the scanner. The licensed Thales SDK is separate and is not bundled.
+The local custom-preview EXE predating the migration is not the Inno installer.
 
-## Files to prepare
+1. Connect scanner power and USB. Close ReaderExpo and other scanner applications.
+2. Open `ThalesBridgeSetup.exe` and approve administrator access.
+3. Select the licensed SDK MSI if the SDK is not installed.
+4. Select **Disable UV/IR** for a QS2000. Check the reader requirements for other models.
+5. Complete the wizard. Confirm that Windows Installed apps lists **Thales Scanner Bridge**.
+6. Confirm that the bridge stays paused.
+7. Open Scanner Manager from the desktop or Start menu shortcut. Click **Run**.
+8. Confirm **Bridge: connected** and **Scanner: connected and ready**.
+9. Save the same endpoint in P360's scanner settings.
+10. Complete a physical scan and verify its image reaches P360.
+11. Restart Windows and confirm that the bridge stays stopped until you open Scanner Manager and click **Run**.
 
-1. `ThalesBridgeSetup.exe`
-2. The licensed **Thales Document Reader SDK x64** `.msi`, unless it is already installed
-3. `monitor-bridge.bat` for optional post-install monitoring
+New installations use `wss://localhost:8765/`. Upgrades retain saved endpoint settings.
+Use Scanner Manager to change protocol or port, then update P360 to match.
+WSS requires a trusted localhost certificate. WS does not use TLS and can be restricted
+by the browser or site policy.
 
-An authorized team member downloads the files from a successful Bitbucket pipeline run
-for the `qa` branch. Because the repository is private, users without repository access
-must receive the files through an approved internal file share or removable drive.
-`ThalesBridgeSetup.exe` works offline after it has been copied to the scanner PC.
+The Inno installer removes the legacy bridge startup task. **Pause** and closing
+Scanner Manager stop the bridge so another application can use the reader.
+The bridge runs without a Command Prompt window. Its output appears in Scanner Manager.
 
-The Thales SDK is licensed software and is not included in the bridge installer.
+For `ERROR_CAMERA_DRIVER_ERROR` or `ERROR_NOT_INITIALISED`, pause the bridge.
+Close other scanner applications. Unplug and reconnect USB, then wait for Windows to detect the reader.
+Click **Run**. Confirm reader readiness and scan a test document in P360.
+If the error returns, save a report before reinstalling. USB recovery does not identify the cause.
 
-## Install
+Run a newer installer over the existing installation to upgrade. Rerun the same build
+to replace/repair files. Do not manually uninstall before an ordinary upgrade.
+Use Windows **Installed apps → Thales Scanner Bridge → Uninstall** to remove it.
+The installer also offers an **Uninstall existing** button for Inno installations.
+The licensed SDK and diagnostic logs are retained.
 
-1. Connect the Thales reader to power and USB.
-2. Double-click `ThalesBridgeSetup.exe`.
-3. Approve the Windows Administrator prompt.
-4. If the setup window says the Thales SDK is not detected, click **Browse** and select
-   the licensed SDK `.msi`.
-5. Keep WebSocket port **8765**.
-6. For a QS2000, keep **Disable UV/IR capture** selected.
-7. Click **Install** and wait for **Installed successfully**.
+Use **Diagnostics**, **Open logs**, and **Save report** in Scanner Manager when a check
+fails. Installer configuration logs are in `C:\ProgramData\ThalesBridge\InstallerLogs`.
+A connected bridge alone does not prove that scanner hardware works.
 
-The client does not need to open a command line or install the .NET SDK.
-
-## Verify
-
-In the setup window, confirm:
-
-1. `Bridge: connected on port 8765`
-2. `Scanner: connected and ready`
-3. Place a document on the reader.
-4. Confirm `Scanner: reading document`.
-5. Confirm `Activity: scan completed`.
-
-After closing setup, double-click `monitor-bridge.bat` to monitor connection and scan
-activity. It does not print document names, numbers, or images.
-
-## If the scanner is not detected
-
-1. Check scanner power and USB.
-2. Close ReaderExpo or any Thales SDK demo application.
-3. Close any second instance of the bridge.
-4. Restart the PC and run `monitor-bridge.bat` again.
-
-The SDK permits only one application to control the reader at a time.
-
-## Installed behavior
-
-- Installation directory: `C:\Program Files\ThalesBridge`
-- Local WebSocket: `wss://localhost:8765`
-- Default startup: at Windows boot as `SYSTEM`
-- The bridge retries automatically when the reader is disconnected
-
-
-### Updated secure installer
-
-Reinstall with the new `ThalesBridgeSetup.exe` on every scanner PC, then set the
-frontend URL to `wss://localhost:8765/`. Setup creates/trusts the local TLS certificate.
-Open **Thales Scanner Bridge** from the desktop for connection details, Thales status,
-Start/Stop/Restart, Enable auto-start, and Diagnostics. Closing the window leaves the
-bridge running. The default startup task starts at Windows boot and retries on failure.
-The manager opens automatically after installation. Use Diagnostics to check certificate
-expiry and rerun setup before it expires. Verify a reboot and repeated scans on the actual PC.
+See [the full acceptance checklist](docs/bridge-installation-connection-checks.md)
+and [installer build details](docs/inno-installer.md).

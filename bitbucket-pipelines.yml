@@ -9,9 +9,12 @@ definitions:
         caches:
           - nuget
         script:
-          - apt-get update && apt-get install -y --no-install-recommends zip
+          - apt-get update && apt-get install -y --no-install-recommends zip curl wine wine64 xvfb xauth
           - if [ -n "${BITBUCKET_TAG:-}" ]; then VERSION="${BITBUCKET_TAG#v}"; else VERSION="0.0.0-ci.${BITBUCKET_BUILD_NUMBER}"; fi
-          - ./build-release.sh "$VERSION"
+          - export WINEPREFIX="$BITBUCKET_CLONE_DIR/.wine-build" WINEDEBUG=-all
+          - xvfb-run -a ./packaging/install-compiler.sh
+          - export ISCC="$WINEPREFIX/drive_c/ThalesBuildTools/InnoSetup/ISCC.exe"
+          - xvfb-run -a ./build-release.sh "$VERSION"
           - test -s ThalesBridgeSetup.exe
           - test -s publish.zip
           - test -s monitor-bridge.bat
@@ -25,9 +28,12 @@ definitions:
         caches:
           - nuget
         script:
-          - apt-get update && apt-get install -y --no-install-recommends zip
+          - apt-get update && apt-get install -y --no-install-recommends zip curl wine wine64 xvfb xauth
           - VERSION="0.0.0-qa.${BITBUCKET_BUILD_NUMBER}"
-          - ./build-release.sh "$VERSION"
+          - export WINEPREFIX="$BITBUCKET_CLONE_DIR/.wine-build" WINEDEBUG=-all
+          - xvfb-run -a ./packaging/install-compiler.sh
+          - export ISCC="$WINEPREFIX/drive_c/ThalesBuildTools/InnoSetup/ISCC.exe"
+          - xvfb-run -a ./build-release.sh "$VERSION"
           - test -s ThalesBridgeSetup.exe
           - test -s publish.zip
           - test -s monitor-bridge.bat

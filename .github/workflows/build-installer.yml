@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -27,9 +27,22 @@ jobs:
         shell: pwsh
         run: ./tests/Check-PowerShell.ps1
 
-      - name: Build self-contained Windows installer
-        shell: bash
-        run: ./build-release.sh "0.0.0-ci.${GITHUB_RUN_NUMBER}"
+      - name: Install verified Inno Setup compiler
+        shell: pwsh
+        run: |
+          $compiler = ./packaging/install-compiler.ps1
+          "ISCC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Check installer integration scripts
+        shell: pwsh
+        run: |
+          ./tests/Check-EndpointSwitch.ps1
+          ./tests/Check-UninstallSettings.ps1
+          ./tests/Check-StartupModes.ps1
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: ./build-release.ps1 -Version "0.0.0-ci.$env:GITHUB_RUN_NUMBER"
 
       - name: Verify release files
         shell: bash

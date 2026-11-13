@@ -5,6 +5,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
 $block = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -eq '$ConfigureEndpoint' }, $true)
 $transaction = [scriptblock]::Create(($block.Clauses[0].Item2.Extent.Text.Trim().Substring(1).TrimEnd().TrimEnd('}') -replace 'exit 0', 'return'))
+$script:hostMessages = [System.Collections.Generic.List[string]]::new()
+function Write-Host($Object) { $script:hostMessages.Add([string]$Object); Write-Information $Object -InformationAction Continue }
 function Fail($message) { throw $message }
 function Pass($message) {}
 function Warn($message) { throw $message }
@@ -15,7 +17,11 @@ function Stop-ScheduledTask {}
 function Start-ScheduledTask {}
 function Get-Process {}
 function Start-Sleep {}
-function Get-NetTCPConnection { throw 'Same-port switch must not reject the current listener' }
+function Get-NetTCPConnection {
+  if ($script:conflict) { return [pscustomobject]@{OwningProcess=4242;LocalAddress='127.0.0.1'} }
+  if ($ManagerOwnedEndpoint) { return }
+  throw 'Same-port switch must not reject the current listener'
+}
 function Set-BridgeEndpoint { param($Port,$Protocol) $script:prepared = "$Protocol/$Port" }
 function Remove-BridgeEndpoint { param($Port,$Protocol) $script:removed = "$Protocol/$Port" }
 function Test-BridgeWebSocket { return $probeSuccess }
@@ -48,4 +54,29 @@ try {
       Write-Host "PASS $oldScheme -> $Protocol same-port switch; handshake success=$probeSuccess"
     }
   }
+  $script:conflict = $true
+  $Port = 9001
+  $beforeSettings = [IO.File]::ReadAllText($settingsFile)
+  $beforeLauncher = [IO.File]::ReadAllText($launcherFile)
+  $script:prepared = $null
+  $messages = @()
+  try { $messages = @(& $transaction 6>&1); throw 'Expected conflict rejection' }
+  catch { if ($_.Exception.Message -notmatch 'already in use') { throw } }
+  if ($script:prepared) { throw 'Conflict changed the reservation' }
+  if (-not ($script:hostMessages -match 'ENDPOINT_CONFLICT.*9001/ PID=4242.*Address=127.0.0.1')) { throw 'Conflict diagnostics missing endpoint or listener owner' }
+  if ([IO.File]::ReadAllText($settingsFile) -cne $beforeSettings -or [IO.File]::ReadAllText($launcherFile) -cne $beforeLauncher) { throw 'Conflict changed installed settings' }
+  Write-Host 'PASS occupied endpoint rejected before changing installed settings'
+  $ManagerOwnedEndpoint = $true
+  $script:conflict = $false
+  Remove-Item $launcherFile
+  function Get-ScheduledTask { throw 'Manager-owned change must not query scheduled tasks' }
+  function Start-ScheduledTask { throw 'Saving while paused must not start the bridge' }
+  function Test-BridgeWebSocket { throw 'Saving while paused must not require a live bridge' }
+  $Port = 41192
+  $Protocol = 'ws'
+  & $transaction
+  $saved = Get-Content $settingsFile -Raw | ConvertFrom-Json
+  if ($saved.port -ne 41192 -or $saved.protocol -ne 'ws') { throw 'Paused endpoint was not saved' }
+  if ($script:prepared -ne 'ws/41192') { throw 'New endpoint was not reserved' }
+  Write-Host 'PASS paused manager endpoint changes without launcher, task or connection'
 } finally { Remove-Item $InstallDir -Recurse -Force }
